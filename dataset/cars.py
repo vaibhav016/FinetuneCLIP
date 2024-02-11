@@ -119,6 +119,9 @@ class SplitCars(SplitCifar100):
 
         self.trainset.targets = self.trainset['label']
         self.testset.targets = self.testset['label']
+        # tta_data_len = len(self.testset) // 2
+        # self.ttaset = self.testset[:tta_data_len]
+        # self.testset = self.testset[tta_data_len:]
 
         classes = order
 
@@ -140,17 +143,18 @@ class SplitCars(SplitCifar100):
 
 
 def zeroshot_classifier(classnames, model):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     with torch.no_grad():
         zeroshot_weights = []
         for classname in tqdm(classnames):
             texts = [template.format(classname)
                      for template in templates]  # format with class
-            texts = tokenize(texts).cuda()  # tokenize
+            texts = tokenize(texts).to(device)  # tokenize
             class_embeddings = model.encode_text(
                 texts)  # embed with text encoder
             class_embeddings /= class_embeddings.norm(dim=-1, keepdim=True)
             class_embedding = class_embeddings.mean(dim=0)
             class_embedding /= class_embedding.norm()
             zeroshot_weights.append(class_embedding)
-        zeroshot_weights = torch.stack(zeroshot_weights, dim=1).cuda()
+        zeroshot_weights = torch.stack(zeroshot_weights, dim=1).to(device)
     return zeroshot_weights.T

@@ -137,7 +137,7 @@ class SplitCifar100(object):
 
         self._get_image_list_for_cur_set()
 
-    def get_dataset(self, task_id, is_train=True, with_buffer=True, balanced=False):
+    def get_dataset(self, task_id, is_train=True, with_buffer=True, balanced=False, is_tta=False):
         if balanced:
             with_buffer = False
         self.task = task_id
@@ -145,8 +145,13 @@ class SplitCifar100(object):
             self.mode = 'train'
             self.set = self.trainset
         else:
-            self.mode = 'test'
-            self.set = self.testset
+            if is_tta:
+                self.mode = "tta"
+                self.set = self.ttaset
+            else:
+                self.mode = 'test'
+                self.set = self.testset
+
         self._get_image_list_for_cur_set(with_buffer=with_buffer)
         idx = copy.deepcopy(self.data_idx)
         curset = self.dataset_collect_fcn(

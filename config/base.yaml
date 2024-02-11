@@ -14,9 +14,9 @@ optimizer: adamw
 lr: 7.5e-6
 wd: 0.2
 no_scheduler: False
-epochs: 10
-workers: 6
-batch_size: 128
+epochs: 1
+workers: 1
+batch_size: 8
 evaluation: False
 
 
@@ -25,17 +25,17 @@ method: Finetune
 
 
 # device
-gpu: 0
+device: cpu
 
-name:
-logs: /path/to/log
+name: CLIP
+logs: logs
 print_frequency: 10
 val_frequency: 100
 save_ckpt: False
-save_base_path: /path/to/save/ckpt
+save_base_path: logs
 save_frequency: 100
 resume: False
-report_to: 
+report_to: abcd
 wandb_project_name: FinetuneCLIP
 log_local: False
 

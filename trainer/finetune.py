@@ -163,30 +163,34 @@ class FinetuneCLIP(object):
                           f'Loss {loss.val:.4f} ({loss.avg: .4f}) \t'
                           f'Estimated Task Time {batch_time.avg * total_batches * self.args.epochs / 3600: .3f} H'
                           )
+                break
 
-            if (epoch + 1) % self.args.val_frequency == 0:
+            if (epoch+1) % self.args.val_frequency == 0:
                 model.eval()
-
-                avg = self.middle_evaluation(
-                    model, dataset, task, epoch)
-                self.unfreeze_model(model)
+                ########### commenting out this########.
+                # avg = self.middle_evaluation(    model, dataset, task, epoch)
+                # self.unfreeze_model(model)
             if not self.args.no_scheduler:
                 self.lr_scheduler.step()
+
+            break
+
 
         model.eval()
         print('Update Buffer....')
         dataset.update_buffer(task)
 
+
     def eva_task_t(self, t, testset, model, task, text_features, text_features_full):
         zero_shot_metric = AverageMeter()
         avg_metric = AverageMeter()
-
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         test_dataloader = DataLoader(
             testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
         for (image, label, _) in tqdm(test_dataloader, desc=f"Evaluation for {t}",
                                       total=len(test_dataloader)):
-            image = image.cuda()
-            label = label.cuda()
+            image = image.to(device)
+            label = label.to(device)
             with torch.no_grad():
                 image_features = model.encode_image(image)
             image_features /= image_features.norm(dim=-1, keepdim=True)
@@ -200,6 +204,8 @@ class FinetuneCLIP(object):
             acc_full = accuracy(logits_full, label)[0]
             zero_shot_metric.update(acc_full, image.size(0))
 
+            break
+
         avg = avg_metric.avg if not torch.is_tensor(
             avg_metric.avg) else avg_metric.avg.item()
         unseen_avg = zero_shot_metric.avg if not torch.is_tensor(
@@ -210,13 +216,14 @@ class FinetuneCLIP(object):
     def zero_shot_evaluation(self, model, transform):
         testset = ImageNet(transform)
         metric = AverageMeter()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         zeroshot_weights = zeroshot_classifier(testset.classes, model)
         test_dataloader = DataLoader(
             testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
         for image, label in tqdm(test_dataloader, desc=f"Evaluation for ImageNet Validation Set",
                                  total=len(test_dataloader)):
-            image = image.cuda()
-            label = label.cuda()
+            image = image.to(device)
+            label = label.to(device)
             with torch.no_grad():
                 image_features = model.encode_image(image)
             image_features /= image_features.norm(dim=-1, keepdim=True)
@@ -275,7 +282,6 @@ class FinetuneCLIP(object):
                 text_features_full = dataset.classifier(
                     dataset.class_name_full, model)
             else:
-
                 text_inputs_full = torch.cat(
                     [tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
                 with torch.no_grad():
@@ -318,9 +324,9 @@ class FinetuneCLIP(object):
             if self.args.report_to:
                 logging('task', task, f'{t}/accuracy per task', acc, self.args)
 
-        zero_shot = self.zero_shot_evaluation(model, dataset.transform) if not (
-            self.args.debug or self.args.sweep) else 0
-        self.zero_shot_metric.update(zero_shot)
+        # zero_shot = self.zero_shot_evaluation(model, dataset.transform) if not (
+        #     self.args.debug or self.args.sweep) else 0
+        # self.zero_shot_metric.update(zero_shot)
 
         if not log:
             return avg_metric.average_accuracy[task], unseen_metric.average_accuracy[task]
@@ -337,7 +343,7 @@ class FinetuneCLIP(object):
             f' * End evaluation: unseen accuracy top1 {self.unseen_metric.average_accuracy[task]:.2f}')
         print(
             f' * End evaluation: whole set evaluation top1 {self.full_metric.average_accuracy[task]:.2f}')
-        print(f'* End evaluation: ImageNet zero0shto top1 {zero_shot:.2f}')
+        # print(f'* End evaluation: ImageNet zero0shto top1 {zero_shot:.2f}')
 
         if self.args.report_to:
             logging('task', task, 'average accuracy',
@@ -350,8 +356,8 @@ class FinetuneCLIP(object):
                     self.metric.learning[:task+1].mean(), self.args)
             logging('task', task, 'unseen accuracy',
                     self.unseen_metric.average_accuracy[task], self.args)
-            logging('task', task, 'ImageNet zero-shot accuracy',
-                    zero_shot, self.args)
+            # logging('task', task, 'ImageNet zero-shot accuracy',
+            #         zero_shot, self.args)
             logging('task', task, 'full set accuracy',
                     self.full_metric.average_accuracy[task], self.args)
             if task == 2:
@@ -365,6 +371,86 @@ class FinetuneCLIP(object):
                         self.args.name), exist_ok=True)
             torch.save({'model_state_dict': model.state_dict(), }, path)
 
+    def tta(self, model, dataset, task):
+        if self.args.scenario == 'class_incremental':
+            if hasattr(dataset, 'classifier'):
+                text_features_full = dataset.classifier(dataset.class_name_full, model)
+            else:
+                text_inputs_full = torch.cat([tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
+                with torch.no_grad():
+                    text_features_full = model.encode_text(text_inputs_full)
+                    text_features_full /= text_features_full.norm(dim=1, keepdim=True)
+
+            if task < dataset.num_tasks - 1:
+                unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes[task + 1:], axis=None)).to(torch.long)
+                text_features = text_features_full.clone().detach()
+                text_features[unseen_class_idx] = 0
+            else:
+                text_features = text_features_full.clone().detach()
+        for t in range(self.args.num_tasks):
+            if t>task:
+                break # TTA will happen only for tasks seen till now.
+            testset = dataset.get_dataset(t, is_train=False, is_tta=True)
+            if self.args.scenario != 'class_incremental':
+                class_name = dataset.get_class_name(t)
+                text_inputs_full = torch.cat(
+                    [tokenize(f"a photo of a {c}") for c in class_name]).cuda()
+                with torch.no_grad():
+                    text_features_full = model.encode_text(text_inputs_full)
+                    text_features_full /= text_features_full.norm(
+                        dim=1, keepdim=True)
+                text_features = text_features_full
+
+            self.compute_tta_loss(t, testset, model, task, text_features)
+    def compute_tta_loss(self, t, testset, model, task, text_features):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if self.args.optimizer == 'adam':
+            optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6,
+                                   weight_decay=self.args.wd)
+        elif self.args.optimizer == 'sgd':
+            optimizer = optim.SGD(model.parameters(), lr=self.args.lr,
+                                  weight_decay=self.args.wd)
+        elif self.args.optimizer == 'adamw':
+            optimizer = optim.AdamW(model.parameters(), lr=self.args.lr, betas=(
+                0.9, 0.999), eps=1e-8, weight_decay=0.2)
+
+        else:
+            raise NotImplementedError
+
+        # self.unfreeze_model(model)
+        # batch_time = AverageMeter()
+        loss = AverageMeter()
+        optimizer.zero_grad()
+        test_dataloader = DataLoader(testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
+        loss_img = nn.CrossEntropyLoss()
+        loss_txt = nn.CrossEntropyLoss()
+
+        for iiter, (image, label, _) in tqdm(enumerate(test_dataloader), desc=f"TTA for {t}", total=len(test_dataloader)):
+            image = image.to(device)
+            label = label.to(device)
+            # ground_truth = torch.arange(len(image), dtype=torch.long, device=self.args.device)
+            # ground_truth_txts = torch.arange(self.num_classes, dtype=torch.long, device=self.args.device)
+            with torch.no_grad():
+                image_features = model.encode_image(image)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            if t <= task:  # update average accuracy for current batch
+                logits_per_image = model.logit_scale.exp() * image_features @ text_features.T
+                # logits_per_text = logits_per_image.t()
+                # Predict the class by observing max activated logit.
+                predicted_class = torch.argmax(logits_per_image, dim=1)
+                # This becomes the groundtruth for images
+                ground_truth_tta = predicted_class
+                # Spanning this groundtruth vector across all the classes
+                total_loss = loss_img(logits_per_image, ground_truth_tta)
+                total_loss.backward()
+                loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
+                self.update_model(model, optimizer, count=image.shape[0], task=t)
+                optimizer.zero_grad()
+
+                if iiter % self.args.print_frequency == 0:
+                    print(f'TTA Loss {loss.val:.4f} ({loss.avg: .4f}) \t')
+                    break
 
 class FinetuneFFN(FinetuneCLIP):
     def unfreeze_model(self, model):

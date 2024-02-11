@@ -7,7 +7,7 @@ import torch
 
 import wandb
 from dataset.cifar100 import CLIPDataset
-from distributed import broadcast_object
+# from distributed import broadcast_object
 
 
 def accuracy(output, target, topk=(1,)):

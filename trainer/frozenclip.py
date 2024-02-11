@@ -52,16 +52,18 @@ class FrozenCLIP(object):
     def train(self, model, dataset, task):
         pass
 
-    def zero_shot_evaluation(self, model, transform):
+    def zero_shot_evaluation(self, model, transform, device):
         testset = ImageNet(transform)
         metric = AverageMeter()
         zeroshot_weights = zeroshot_classifier(testset.classes, model)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         test_dataloader = DataLoader(
             testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
         for image, label in tqdm(test_dataloader, desc=f"Evaluation for ImageNet Validation Set",
                                  total=len(test_dataloader)):
-            image = image.cuda()
-            label = label.cuda()
+
+            image = image.to(device)
+            label = label.to(device)
             with torch.no_grad():
                 image_features = model.encode_image(image)
             image_features /= image_features.norm(dim=-1, keepdim=True)
@@ -71,21 +73,16 @@ class FrozenCLIP(object):
         return metric.avg.item()
 
     def evaluation(self, model, dataset, task):
-
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         metric = AverageMeter()
-
         testset = dataset.get_dataset(task, is_train=False)
-
         if self.args.scenario == 'class_incremental':
-
             if hasattr(dataset, 'classifier'):
                 text_features_full = dataset.classifier(
                     dataset.class_name_full, model)
-
             else:
-
                 text_inputs_full = torch.cat(
-                    [tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
+                    [tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).to(device)
                 with torch.no_grad():
                     text_features_full = model.encode_text(text_inputs_full)
                     text_features_full /= text_features_full.norm(
