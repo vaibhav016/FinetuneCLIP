@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from datasets import load_dataset,Features,Value
 
 from dataset.cars_name import classes as car_names
 from dataset.cars_name import templates, order
@@ -92,10 +93,11 @@ class FewShotCLIPDataset(Dataset):
 class SplitCars(SplitCifar100):
     def __init__(self, args, root='./', transform=None):
         root = './'
+        # context_feat = Features({'text': Value(dtype='string', id=None)})
         self.trainset = datasets.load_dataset(
-            'Multimodal-Fatima/StanfordCars_train', cache_dir=root)['train']
+            'Multimodal-Fatima/StanfordCars_train', cache_dir=root )['train']
         self.testset = datasets.load_dataset(
-            'Multimodal-Fatima/StanfordCars_test', cache_dir=root)['test']
+            'Multimodal-Fatima/StanfordCars_test', cache_dir=root )['test']
         self.transform = transform
         self.root = root
 

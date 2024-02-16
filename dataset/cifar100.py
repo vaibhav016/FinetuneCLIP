@@ -11,6 +11,7 @@ from tqdm import tqdm
 from clip.clip import tokenize
 from dataset.cifar100_name import classes as class_names
 from dataset.cifar100_name import templates, order
+from torch.utils.data import random_split
 
 
 class CLIPDataset(Dataset):
@@ -94,11 +95,17 @@ class FewShotCLIPDataset(Dataset):
 
 class SplitCifar100(object):
     def __init__(self, args, root, transform=None, valid=False, num_tasks=10):
+        root = './'
         self.trainset = CIFAR100(
             root, train=True, transform=transform, download=True)
         self.testset = CIFAR100(
             root, train=False, transform=transform, download=True)
         self.transform = transform
+
+        test_data_len = len(self.testset)
+        self.ttaset, self.testset = random_split(self.testset, [test_data_len // 2, test_data_len - (test_data_len // 2)])
+        self.ttaset.targets = [i[1] for i in self.ttaset]
+        self.testset.targets = [i[1] for i in self.testset]
 
         self.task = 0
         self.mode = 'train'

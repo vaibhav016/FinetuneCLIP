@@ -100,7 +100,8 @@ def main(args):
             Trainer.only_evaluation(model, dataset, task)
             continue
         Trainer.train(model, dataset, task)
-        Trainer.tta(model, dataset, task)
+        if args.tta_phase and task > 0:
+            Trainer.tta(model, dataset, task)
         Trainer.evaluation(model, dataset, task)
         Trainer.save_checkpoint(model, task, args)
 

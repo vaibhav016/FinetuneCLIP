@@ -8,6 +8,7 @@ from clip.clip import tokenize
 from dataset.cifar100 import CLIPDataset, SplitCifar100, FewShotCLIPDataset
 from dataset.gtsrb_name import classes as class_names
 from dataset.gtsrb_name import templates
+from torch.utils.data import random_split
 
 
 class SplitGTSRB(SplitCifar100):
@@ -20,6 +21,11 @@ class SplitGTSRB(SplitCifar100):
 
         self.trainset.targets = [i[1] for i in self.trainset._samples]
         self.testset.targets = [i[1] for i in self.testset._samples]
+
+        test_data_len = len(self.testset)
+        self.ttaset, self.testset = random_split(self.testset, [test_data_len//2, test_data_len-(test_data_len//2)])
+        self.ttaset.targets = [i[1] for i in self.ttaset]
+        self.testset.targets = [i[1] for i in self.testset]
 
         self.transform = transform
         self.root = root

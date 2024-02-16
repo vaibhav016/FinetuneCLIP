@@ -6,6 +6,7 @@ balanced_buffer: True
 joint: False
 buffer_size: 1
 few_shot: 0
+tta_phase: True
 
 # base model and optimizer
 model: 'ViT-B/16'
@@ -14,9 +15,9 @@ optimizer: adamw
 lr: 7.5e-6
 wd: 0.2
 no_scheduler: False
-epochs: 1
+epochs: 10
 workers: 1
-batch_size: 8
+batch_size: 64
 evaluation: False
 
 
@@ -25,7 +26,7 @@ method: Finetune
 
 
 # device
-device: cpu
+device: cuda
 
 name: CLIP
 logs: logs

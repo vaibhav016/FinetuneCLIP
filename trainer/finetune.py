@@ -163,7 +163,6 @@ class FinetuneCLIP(object):
                           f'Loss {loss.val:.4f} ({loss.avg: .4f}) \t'
                           f'Estimated Task Time {batch_time.avg * total_batches * self.args.epochs / 3600: .3f} H'
                           )
-                break
 
             if (epoch+1) % self.args.val_frequency == 0:
                 model.eval()
@@ -172,9 +171,6 @@ class FinetuneCLIP(object):
                 # self.unfreeze_model(model)
             if not self.args.no_scheduler:
                 self.lr_scheduler.step()
-
-            break
-
 
         model.eval()
         print('Update Buffer....')
@@ -203,8 +199,6 @@ class FinetuneCLIP(object):
             logits_full = 100.0 * image_features @ text_features_full.T
             acc_full = accuracy(logits_full, label)[0]
             zero_shot_metric.update(acc_full, image.size(0))
-
-            break
 
         avg = avg_metric.avg if not torch.is_tensor(
             avg_metric.avg) else avg_metric.avg.item()
@@ -360,9 +354,9 @@ class FinetuneCLIP(object):
             #         zero_shot, self.args)
             logging('task', task, 'full set accuracy',
                     self.full_metric.average_accuracy[task], self.args)
-            if task == 2:
-                wandb.log(
-                    {'valid accuracy': self.metric.average_accuracy[task]})
+            # if task == 2:
+            #     wandb.log(
+            #         {'valid accuracy': self.metric.average_accuracy[task]})
 
     def save_checkpoint(self, model, task, args):
         if args.save_ckpt:
@@ -387,6 +381,7 @@ class FinetuneCLIP(object):
                 text_features[unseen_class_idx] = 0
             else:
                 text_features = text_features_full.clone().detach()
+
         for t in range(self.args.num_tasks):
             if t>task:
                 break # TTA will happen only for tasks seen till now.
@@ -400,8 +395,9 @@ class FinetuneCLIP(object):
                     text_features_full /= text_features_full.norm(
                         dim=1, keepdim=True)
                 text_features = text_features_full
-
-            self.compute_tta_loss(t, testset, model, task, text_features)
+            for e in range(1):
+                # Training for 5 epochs in TTA
+                self.compute_tta_loss(t, testset, model, task, text_features)
     def compute_tta_loss(self, t, testset, model, task, text_features):
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -418,7 +414,7 @@ class FinetuneCLIP(object):
         else:
             raise NotImplementedError
 
-        # self.unfreeze_model(model)
+        self.unfreeze_model(model)
         # batch_time = AverageMeter()
         loss = AverageMeter()
         optimizer.zero_grad()
@@ -429,28 +425,38 @@ class FinetuneCLIP(object):
         for iiter, (image, label, _) in tqdm(enumerate(test_dataloader), desc=f"TTA for {t}", total=len(test_dataloader)):
             image = image.to(device)
             label = label.to(device)
-            # ground_truth = torch.arange(len(image), dtype=torch.long, device=self.args.device)
+            ground_truth_batch = torch.arange(len(image), dtype=torch.long, device=self.args.device)
             # ground_truth_txts = torch.arange(self.num_classes, dtype=torch.long, device=self.args.device)
             with torch.no_grad():
                 image_features = model.encode_image(image)
             image_features /= image_features.norm(dim=-1, keepdim=True)
             if t <= task:  # update average accuracy for current batch
-                logits_per_image = model.logit_scale.exp() * image_features @ text_features.T
-                # logits_per_text = logits_per_image.t()
+                # logits_per_image = model.logit_scale.exp() * image_features @ text_features.T
+                # # logits_per_text = logits_per_image.t()
+                # # Predict the class by observing max activated logit.
+                # predicted_class = torch.argmax(logits_per_image, dim=1)
+                # # This becomes the groundtruth for images
+                # ground_truth_tta = predicted_class
+                # # Spanning this groundtruth vector across all the classes
+                # total_loss = loss_img(logits_per_image, ground_truth_tta)
+
+                logits_per_image_predicted_phase_1 = model.logit_scale.exp() * image_features @ text_features.T
                 # Predict the class by observing max activated logit.
-                predicted_class = torch.argmax(logits_per_image, dim=1)
+                predicted_class = torch.argmax(logits_per_image_predicted_phase_1, dim=1)
                 # This becomes the groundtruth for images
-                ground_truth_tta = predicted_class
-                # Spanning this groundtruth vector across all the classes
-                total_loss = loss_img(logits_per_image, ground_truth_tta)
+                # ground_truth_tta = predicted_class
+                # Getting text features corresponding to the predicted class
+                text_features_predicted = text_features[predicted_class]
+                logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
+                logits_per_text_phase_2 = logits_per_image_phase_2.T
+                # print(logits_per_image_phase_2, "---------------------------")
+                total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch))/2.0
                 total_loss.backward()
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
                 self.update_model(model, optimizer, count=image.shape[0], task=t)
                 optimizer.zero_grad()
-
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss {loss.val:.4f} ({loss.avg: .4f}) \t')
-                    break
 
 class FinetuneFFN(FinetuneCLIP):
     def unfreeze_model(self, model):

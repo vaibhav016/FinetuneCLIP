@@ -19,9 +19,9 @@ class SplitAircraft(SplitCifar100):
     def __init__(self, args, root='./', transform=None):
         root = './'
         self.trainset = FGVCAircraft(
-            root, split='train', transform=transform,)
-        self.testset = FGVCAircraft(root, split='test', transform=transform,)
-        self.ttaset =  FGVCAircraft(root, split='val', transform=transform,)
+            root, split='train', transform=transform,download=True)
+        self.testset = FGVCAircraft(root, split='test', transform=transform,download=True)
+        self.ttaset =  FGVCAircraft(root, split='val', transform=transform,download=True)
         self.trainset.targets = self.trainset._labels
         self.testset.targets = self.testset._labels
         self.ttaset.targets = self.ttaset._labels
