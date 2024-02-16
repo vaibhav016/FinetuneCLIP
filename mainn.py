@@ -19,6 +19,7 @@ from dataset.cifar100 import SplitCifar100
 from dataset.cub import CUB
 from dataset.gtsrb import SplitGTSRB
 from trainer import METHOD
+import copy
 
 
 def random_seed(seed=42, rank=0):
@@ -69,6 +70,8 @@ def main(args):
     model, transform = clip.load(
         args.model, download_root='./clip_models/', args=args)
 
+    teacher_model, _ = clip.load(args.model, download_root='./clip_models/', args=args)
+
     args.hidden_size = model.visual.proj.shape[0]
     args.visual_layers = len(model.visual.transformer.resblocks)
 
@@ -93,6 +96,7 @@ def main(args):
     Trainer = METHOD[args.method](args)
 
     for task in range(dataset.num_tasks):
+        teacher_model.load_state_dict(model.state_dict())
         if args.sweep and task == 3:
             break
         print(f'Train task {task}')
@@ -100,8 +104,8 @@ def main(args):
             Trainer.only_evaluation(model, dataset, task)
             continue
         Trainer.train(model, dataset, task)
-        if args.tta_phase and task > 0:
-            Trainer.tta(model, dataset, task)
+        if args.tta_phase and task >= 0:
+            Trainer.tta(teacher_model, model, dataset, task)
         Trainer.evaluation(model, dataset, task)
         Trainer.save_checkpoint(model, task, args)
 

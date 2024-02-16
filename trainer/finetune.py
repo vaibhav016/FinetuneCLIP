@@ -129,6 +129,9 @@ class FinetuneCLIP(object):
         loss = AverageMeter()
         optimizer.zero_grad()
 
+        if self.args.sanity:
+            self.args.epochs=1
+
         for epoch in range(self.args.epochs):
             buffer_iterator = iter(buffer_loader) if buffer_loader else None
             for iiter, batch in enumerate(train_dataloader):
@@ -163,7 +166,8 @@ class FinetuneCLIP(object):
                           f'Loss {loss.val:.4f} ({loss.avg: .4f}) \t'
                           f'Estimated Task Time {batch_time.avg * total_batches * self.args.epochs / 3600: .3f} H'
                           )
-
+                if self.args.sanity:
+                    break
             if (epoch+1) % self.args.val_frequency == 0:
                 model.eval()
                 ########### commenting out this########.
@@ -175,7 +179,6 @@ class FinetuneCLIP(object):
         model.eval()
         print('Update Buffer....')
         dataset.update_buffer(task)
-
 
     def eva_task_t(self, t, testset, model, task, text_features, text_features_full):
         zero_shot_metric = AverageMeter()
@@ -199,6 +202,8 @@ class FinetuneCLIP(object):
             logits_full = 100.0 * image_features @ text_features_full.T
             acc_full = accuracy(logits_full, label)[0]
             zero_shot_metric.update(acc_full, image.size(0))
+            if self.args.sanity:
+                break
 
         avg = avg_metric.avg if not torch.is_tensor(
             avg_metric.avg) else avg_metric.avg.item()
@@ -365,10 +370,13 @@ class FinetuneCLIP(object):
                         self.args.name), exist_ok=True)
             torch.save({'model_state_dict': model.state_dict(), }, path)
 
-    def tta(self, model, dataset, task):
+    def tta(self, teacher_model, model, dataset, task):
         if self.args.scenario == 'class_incremental':
             if hasattr(dataset, 'classifier'):
                 text_features_full = dataset.classifier(dataset.class_name_full, model)
+                if self.args.tta_loss_mode == "teacher_student":
+                    text_features_teacher_full = dataset.classifier(dataset.class_name_full, teacher_model)
+
             else:
                 text_inputs_full = torch.cat([tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
                 with torch.no_grad():
@@ -379,8 +387,15 @@ class FinetuneCLIP(object):
                 unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes[task + 1:], axis=None)).to(torch.long)
                 text_features = text_features_full.clone().detach()
                 text_features[unseen_class_idx] = 0
+                if self.args.tta_loss_mode == "teacher_student":
+                    text_features_teacher = text_features_teacher_full.clone().detach()
+                    text_features_teacher[unseen_class_idx] = 0
             else:
                 text_features = text_features_full.clone().detach()
+                if self.args.tta_loss_mode == "teacher_student":
+                    text_features_teacher = text_features_teacher_full.clone().detach()
+
+
 
         for t in range(self.args.num_tasks):
             if t>task:
@@ -397,7 +412,70 @@ class FinetuneCLIP(object):
                 text_features = text_features_full
             for e in range(1):
                 # Training for 5 epochs in TTA
-                self.compute_tta_loss(t, testset, model, task, text_features)
+                if self.args.tta_loss_mode == "teacher_student":
+                    self.compute_tta_teacher_student_loss(t, testset, teacher_model, model, task, text_features, text_features_teacher)
+                elif self.args.tta_loss_mode == "base":
+                    self.compute_tta_loss(t, testset, model, task, text_features)
+                else:
+                    raise Exception("TTA loss not implemented",  self.args.tta_loss_mode)
+
+
+
+    def compute_tta_teacher_student_loss(self,t, testset, teacher_model, model, task, text_features, text_features_teacher):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.args.optimizer == 'adam':
+            optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6, weight_decay=self.args.wd)
+        elif self.args.optimizer == 'sgd':
+            optimizer = optim.SGD(model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
+        elif self.args.optimizer == 'adamw':
+            optimizer = optim.AdamW(model.parameters(), lr=self.args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.2)
+
+        else:
+            raise NotImplementedError
+
+        self.unfreeze_model(model)
+        # batch_time = AverageMeter()
+        loss = AverageMeter()
+        optimizer.zero_grad()
+        test_dataloader = DataLoader(testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
+        loss_img = nn.CrossEntropyLoss()
+        loss_txt = nn.CrossEntropyLoss()
+
+        for iiter, (image, label, _) in tqdm(enumerate(test_dataloader), desc=f"TTA for {t}", total=len(test_dataloader)):
+            image = image.to(device)
+            label = label.to(device)
+            ground_truth_batch = torch.arange(len(image), dtype=torch.long, device=self.args.device)
+            # ground_truth_txts = torch.arange(self.num_classes, dtype=torch.long, device=self.args.device)
+            with torch.no_grad():
+                image_features = model.encode_image(image)
+                teacher_image_features = teacher_model.encode_image(image)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            teacher_image_features /= teacher_image_features.norm(dim=-1, keepdim=True)
+            if t <= task:  # update average accuracy for current batch
+                logits_per_image_teacher = teacher_model.logit_scale.exp() * teacher_image_features @ text_features_teacher.T
+                logits_per_image_student = model.logit_scale.exp() * image_features @ text_features.T
+
+                predicted_class_teacher = torch.argmax(logits_per_image_teacher, dim=1)
+                predicted_class_student = torch.argmax(logits_per_image_student, dim=1)
+
+                # Predict the class by observing max activated logit from the two models.
+                # This becomes the groundtruth for images
+                predicted_class = torch.max(predicted_class_student, predicted_class_teacher)
+
+                # ground_truth_tta = predicted_class
+                # Getting text features corresponding to the predicted class
+                text_features_predicted = text_features[predicted_class]
+                logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
+                logits_per_text_phase_2 = logits_per_image_phase_2.T
+                # print(logits_per_image_phase_2, "---------------------------")
+                total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch)) / 2.0
+                total_loss.backward()
+                loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
+                self.update_model(model, optimizer, count=image.shape[0], task=t)
+                optimizer.zero_grad()
+                if iiter % self.args.print_frequency == 0:
+                    print(f'TTA Loss {loss.val:.4f} ({loss.avg: .4f}) \t')
+
     def compute_tta_loss(self, t, testset, model, task, text_features):
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
