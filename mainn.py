@@ -96,7 +96,6 @@ def main(args):
     Trainer = METHOD[args.method](args)
 
     for task in range(dataset.num_tasks):
-        teacher_model.load_state_dict(model.state_dict())
         if args.sweep and task == 3:
             break
         print(f'Train task {task}')
@@ -104,7 +103,8 @@ def main(args):
             Trainer.only_evaluation(model, dataset, task)
             continue
         Trainer.train(model, dataset, task)
-        if args.tta_phase and task >= 0:
+        teacher_model.load_state_dict(model.state_dict())
+        if args.tta_phase and task > 0:
             Trainer.tta(teacher_model, model, dataset, task)
         Trainer.evaluation(model, dataset, task)
         Trainer.save_checkpoint(model, task, args)
