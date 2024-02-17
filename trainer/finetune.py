@@ -56,12 +56,12 @@ class FinetuneCLIP(object):
             trainset = dataset.get_dataset(
                 task, is_train=True, with_buffer=False)
             bufferset = dataset.get_buffer(task) if task > 0 else None
-            print('buffer:', bufferset)
+            # print('buffer:', bufferset)
         else:
             trainset = dataset.get_dataset(
                 task, is_train=True, with_buffer=(self.args.buffer_size > 0))
             bufferset = None
-        print(trainset)
+        # print(trainset)
         if bufferset:
             buffer_loader = self.get_loader(bufferset)
         else:
@@ -99,9 +99,23 @@ class FinetuneCLIP(object):
     def get_batch_size(self, batch, **kwargs):
         return batch[0].size(0)
 
-    def train(self, model, dataset, task):
+    def cosine_scheduler(self, base_value, final_value, epochs, niter_per_ep, warmup_epochs=0, start_warmup_value=0):
+        warmup_schedule = np.array([])
+        warmup_iters = warmup_epochs * niter_per_ep
+        if warmup_epochs > 0:
+            warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+
+        iters = np.arange(epochs * niter_per_ep - warmup_iters)
+        schedule = final_value + 0.5 * (base_value - final_value) * (1 + np.cos(np.pi * iters / len(iters)))
+
+        schedule = np.concatenate((warmup_schedule, schedule))
+        assert len(schedule) == epochs * niter_per_ep
+        return schedule
+
+    def train(self, teacher_model, model, dataset, task):
         train_dataloader, buffer_loader, total_batches = self.get_iterator(
             dataset, task)
+        momentum_schedule = self.cosine_scheduler(0.996, 1, self.args.epochs, len(train_dataloader))
 
         if self.args.optimizer == 'adam':
             optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6,
@@ -137,7 +151,6 @@ class FinetuneCLIP(object):
             for iiter, batch in enumerate(train_dataloader):
                 batch_size = self.get_batch_size(batch)
                 end = time.time()
-
                 if buffer_iterator:
                     try:
                         batch_b = next(buffer_iterator)
@@ -166,6 +179,12 @@ class FinetuneCLIP(object):
                           f'Loss {loss.val:.4f} ({loss.avg: .4f}) \t'
                           f'Estimated Task Time {batch_time.avg * total_batches * self.args.epochs / 3600: .3f} H'
                           )
+                if self.args.ema:
+                    with torch.no_grad():
+                        m = momentum_schedule[iiter]
+                        for param_q, param_k in zip(model.net.parameters(), teacher_model.net.parameters()):
+                            param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+
                 if self.args.sanity:
                     break
             if (epoch+1) % self.args.val_frequency == 0:
@@ -395,8 +414,6 @@ class FinetuneCLIP(object):
                 if self.args.tta_loss_mode == "teacher_student":
                     text_features_teacher = text_features_teacher_full.clone().detach()
 
-
-
         for t in range(self.args.num_tasks):
             if t>task:
                 break # TTA will happen only for tasks seen till now.
@@ -452,6 +469,7 @@ class FinetuneCLIP(object):
             image_features /= image_features.norm(dim=-1, keepdim=True)
             teacher_image_features /= teacher_image_features.norm(dim=-1, keepdim=True)
             if t <= task:  # update average accuracy for current batch
+
                 logits_per_image_teacher = teacher_model.logit_scale.exp() * teacher_image_features @ text_features_teacher.T
                 logits_per_image_student = model.logit_scale.exp() * image_features @ text_features.T
 
@@ -465,6 +483,7 @@ class FinetuneCLIP(object):
                 # ground_truth_tta = predicted_class
                 # Getting text features corresponding to the predicted class
                 text_features_predicted = text_features[predicted_class]
+
                 logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
                 logits_per_text_phase_2 = logits_per_image_phase_2.T
                 # print(logits_per_image_phase_2, "---------------------------")
@@ -517,14 +536,17 @@ class FinetuneCLIP(object):
                 # ground_truth_tta = predicted_class
                 # # Spanning this groundtruth vector across all the classes
                 # total_loss = loss_img(logits_per_image, ground_truth_tta)
+                if self.args.oracle:
+                    text_features_predicted = text_features[label]
+                else:
+                    logits_per_image_predicted_phase_1 = model.logit_scale.exp() * image_features @ text_features.T
+                    # Predict the class by observing max activated logit.
+                    predicted_class = torch.argmax(logits_per_image_predicted_phase_1, dim=1)
+                    # This becomes the groundtruth for images
+                    # ground_truth_tta = predicted_class
+                    # Getting text features corresponding to the predicted class
+                    text_features_predicted = text_features[predicted_class]
 
-                logits_per_image_predicted_phase_1 = model.logit_scale.exp() * image_features @ text_features.T
-                # Predict the class by observing max activated logit.
-                predicted_class = torch.argmax(logits_per_image_predicted_phase_1, dim=1)
-                # This becomes the groundtruth for images
-                # ground_truth_tta = predicted_class
-                # Getting text features corresponding to the predicted class
-                text_features_predicted = text_features[predicted_class]
                 logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
                 logits_per_text_phase_2 = logits_per_image_phase_2.T
                 # print(logits_per_image_phase_2, "---------------------------")

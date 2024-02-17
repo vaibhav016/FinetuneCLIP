@@ -9,6 +9,8 @@ few_shot: 0
 tta_phase: True
 tta_loss_mode: "teacher_student"
 # it can be eiher base(normal tta loss), or teacher_student
+ema: False
+oracle: False
 
 # base model and optimizer
 model: 'ViT-B/16'

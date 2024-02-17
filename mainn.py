@@ -102,9 +102,10 @@ def main(args):
         if args.evaluation:
             Trainer.only_evaluation(model, dataset, task)
             continue
-        Trainer.train(model, dataset, task)
-        teacher_model.load_state_dict(model.state_dict())
-        if args.tta_phase and task > 0:
+        Trainer.train(teacher_model, model, dataset, task)
+        if not args.ema:
+            teacher_model.load_state_dict(model.state_dict())
+        if args.tta_phase and task >= 0:
             Trainer.tta(teacher_model, model, dataset, task)
         Trainer.evaluation(model, dataset, task)
         Trainer.save_checkpoint(model, task, args)
