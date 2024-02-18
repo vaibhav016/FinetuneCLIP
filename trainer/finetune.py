@@ -289,10 +289,11 @@ class FinetuneCLIP(object):
         print(f'val acc {acc / n}')
         return acc / n
 
-    def evaluation(self, model, dataset, task, log=True):
+    def evaluation(self, model, dataset, task, log=True, acc_matrix=None):
 
         unseen_metric = self.unseen_metric
         avg_metric = self.metric
+        curr_acc_matrix = []
 
         if self.args.scenario == 'class_incremental':
 
@@ -329,7 +330,7 @@ class FinetuneCLIP(object):
 
             acc, acc_full, n = self.eva_task_t(
                 t, testset, model, task, text_features, text_features_full)
-
+            curr_acc_matrix.append(acc)
             # update for current task
             self.full_metric.update(task, t, acc_full, n=n)
             self.full_metric.update_metric(task, t)
@@ -363,6 +364,8 @@ class FinetuneCLIP(object):
             f' * End evaluation: whole set evaluation top1 {self.full_metric.average_accuracy[task]:.2f}')
         # print(f'* End evaluation: ImageNet zero0shto top1 {zero_shot:.2f}')
 
+        acc_matrix.append(curr_acc_matrix)
+
         if self.args.report_to:
             logging('task', task, 'average accuracy',
                     self.metric.average_accuracy[task], self.args)
@@ -395,7 +398,6 @@ class FinetuneCLIP(object):
                 text_features_full = dataset.classifier(dataset.class_name_full, model)
                 if self.args.tta_loss_mode == "teacher_student":
                     text_features_teacher_full = dataset.classifier(dataset.class_name_full, teacher_model)
-
             else:
                 text_inputs_full = torch.cat([tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
                 with torch.no_grad():
@@ -476,9 +478,9 @@ class FinetuneCLIP(object):
                     logits_per_image_teacher = teacher_model.logit_scale.exp() * teacher_image_features @ text_features_teacher.T
                     logits_per_image_student = model.logit_scale.exp() * image_features @ text_features.T
 
-                    predicted_class_teacher = torch.argmax(logits_per_image_teacher, dim=1)
-                    predicted_class_student = torch.argmax(logits_per_image_student, dim=1)
-                    predicted_class = torch.max(predicted_class_student, predicted_class_teacher)
+                    max_teacher_logit, teacher_index = torch.max(logits_per_image_teacher, dim=1)
+                    max_student_logit, student_index = torch.max(logits_per_image_student, dim=1)
+                    predicted_class = torch.where(max_teacher_logit > max_student_logit, teacher_index, student_index)
 
                 text_features_predicted = text_features[predicted_class]
                 logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
@@ -495,6 +497,8 @@ class FinetuneCLIP(object):
                         param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss {loss.val:.4f} ({loss.avg: .4f}) \t')
+                if self.args.sanity:
+                    break
 
     def compute_tta_loss(self, t, testset, teacher_model, model, task, text_features):
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -551,6 +555,9 @@ class FinetuneCLIP(object):
                             param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss {loss.val:.4f} ({loss.avg: .4f}) \t')
+                if self.args.sanity:
+                    break
+
 
 class FinetuneFFN(FinetuneCLIP):
     def unfreeze_model(self, model):

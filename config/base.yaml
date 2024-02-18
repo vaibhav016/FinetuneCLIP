@@ -45,6 +45,8 @@ resume: False
 report_to: abcd
 wandb_project_name: FinetuneCLIP
 log_local: False
+save_path: $SLURM_TMPDIR/output
+#save_path: /Users/vaibhavsingh/Desktop/FinetuneCLIP/
 
 debug: False
 sweep:
