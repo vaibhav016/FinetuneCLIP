@@ -64,7 +64,7 @@ def main(args):
 
         )
 
-    print("{}".format(args).replace(', ', ',\n'))
+  
 
     # set up model
     model, transform = clip.load(
@@ -105,12 +105,19 @@ def main(args):
         Trainer.train(teacher_model, model, dataset, task)
         if not args.ema:
             teacher_model.load_state_dict(model.state_dict())
-        if args.tta_phase and task >= 0:
+        if args.tta_phase and task > 0:
             Trainer.tta(teacher_model, model, dataset, task)
+        print("------------------- Evaluation of Student model ----------------------")
         Trainer.evaluation(model, dataset, task)
+
+        print("------------------- Evaluation of Teacher model ----------------------")
+        Trainer.evaluation(teacher_model, dataset, task)
+
         Trainer.save_checkpoint(model, task, args)
 
     print(f'Total training time in hours: {(time.time() - start) / 3600: .3f}')
+
+    print("{}".format(args).replace(', ', ',\n'))
 
     if args.wandb:
         wandb.finish()
@@ -118,3 +125,5 @@ def main(args):
 
 if __name__ == '__main__':
     main()
+
+

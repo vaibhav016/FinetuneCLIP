@@ -11,6 +11,7 @@ tta_loss_mode: "teacher_student"
 # it can be eiher base(normal tta loss), or teacher_student
 ema: False
 oracle: False
+schedule: 0.999
 
 # base model and optimizer
 model: 'ViT-B/16'
@@ -20,7 +21,7 @@ lr: 7.5e-6
 wd: 0.2
 no_scheduler: False
 epochs: 10
-workers: 1
+workers: 6
 batch_size: 64
 evaluation: False
 sanity: False

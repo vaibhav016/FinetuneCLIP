@@ -115,7 +115,7 @@ class FinetuneCLIP(object):
     def train(self, teacher_model, model, dataset, task):
         train_dataloader, buffer_loader, total_batches = self.get_iterator(
             dataset, task)
-        momentum_schedule = self.cosine_scheduler(0.996, 1, self.args.epochs, len(train_dataloader))
+        momentum_schedule = self.cosine_scheduler(self.args.schedule, 1, self.args.epochs, len(train_dataloader))
 
         if self.args.optimizer == 'adam':
             optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6,
@@ -182,7 +182,7 @@ class FinetuneCLIP(object):
                 if self.args.ema:
                     with torch.no_grad():
                         m = momentum_schedule[iiter]
-                        for param_q, param_k in zip(model.net.parameters(), teacher_model.net.parameters()):
+                        for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
                             param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
 
                 if self.args.sanity:
@@ -432,7 +432,7 @@ class FinetuneCLIP(object):
                 if self.args.tta_loss_mode == "teacher_student":
                     self.compute_tta_teacher_student_loss(t, testset, teacher_model, model, task, text_features, text_features_teacher)
                 elif self.args.tta_loss_mode == "base":
-                    self.compute_tta_loss(t, testset, model, task, text_features)
+                    self.compute_tta_loss(t, testset, teacher_model, model, task, text_features)
                 else:
                     raise Exception("TTA loss not implemented",  self.args.tta_loss_mode)
 
@@ -455,49 +455,50 @@ class FinetuneCLIP(object):
         loss = AverageMeter()
         optimizer.zero_grad()
         test_dataloader = DataLoader(testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
+        momentum_schedule = self.cosine_scheduler(self.args.schedule, 1, 1, len(test_dataloader))
+
         loss_img = nn.CrossEntropyLoss()
         loss_txt = nn.CrossEntropyLoss()
 
         for iiter, (image, label, _) in tqdm(enumerate(test_dataloader), desc=f"TTA for {t}", total=len(test_dataloader)):
             image = image.to(device)
             label = label.to(device)
-            ground_truth_batch = torch.arange(len(image), dtype=torch.long, device=self.args.device)
-            # ground_truth_txts = torch.arange(self.num_classes, dtype=torch.long, device=self.args.device)
+            ground_truth_batch = torch.arange(len(image), dtype=torch.long, device=self.args.device) 
             with torch.no_grad():
-                image_features = model.encode_image(image)
-                teacher_image_features = teacher_model.encode_image(image)
+                image_features = model.encode_image(image) # Obtain image features from student
+                teacher_image_features = teacher_model.encode_image(image) # # Obtain image features from Teacher
             image_features /= image_features.norm(dim=-1, keepdim=True)
             teacher_image_features /= teacher_image_features.norm(dim=-1, keepdim=True)
             if t <= task:  # update average accuracy for current batch
+                if self.args.oracle: 
+                    predicted_class = label 
+                else:
+                    logits_per_image_teacher = teacher_model.logit_scale.exp() * teacher_image_features @ text_features_teacher.T
+                    logits_per_image_student = model.logit_scale.exp() * image_features @ text_features.T
 
-                logits_per_image_teacher = teacher_model.logit_scale.exp() * teacher_image_features @ text_features_teacher.T
-                logits_per_image_student = model.logit_scale.exp() * image_features @ text_features.T
+                    predicted_class_teacher = torch.argmax(logits_per_image_teacher, dim=1)
+                    predicted_class_student = torch.argmax(logits_per_image_student, dim=1)
+                    predicted_class = torch.max(predicted_class_student, predicted_class_teacher)
 
-                predicted_class_teacher = torch.argmax(logits_per_image_teacher, dim=1)
-                predicted_class_student = torch.argmax(logits_per_image_student, dim=1)
-
-                # Predict the class by observing max activated logit from the two models.
-                # This becomes the groundtruth for images
-                predicted_class = torch.max(predicted_class_student, predicted_class_teacher)
-
-                # ground_truth_tta = predicted_class
-                # Getting text features corresponding to the predicted class
                 text_features_predicted = text_features[predicted_class]
-
                 logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
                 logits_per_text_phase_2 = logits_per_image_phase_2.T
-                # print(logits_per_image_phase_2, "---------------------------")
+            
                 total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch)) / 2.0
                 total_loss.backward()
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
                 self.update_model(model, optimizer, count=image.shape[0], task=t)
                 optimizer.zero_grad()
+                with torch.no_grad(): # Updating the Teacher via EMA 
+                    m = momentum_schedule[iiter]
+                    for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                        param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss {loss.val:.4f} ({loss.avg: .4f}) \t')
 
-    def compute_tta_loss(self, t, testset, model, task, text_features):
+    def compute_tta_loss(self, t, testset, teacher_model, model, task, text_features):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-
+       
         if self.args.optimizer == 'adam':
             optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6,
                                    weight_decay=self.args.wd)
@@ -516,6 +517,7 @@ class FinetuneCLIP(object):
         loss = AverageMeter()
         optimizer.zero_grad()
         test_dataloader = DataLoader(testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
+        momentum_schedule = self.cosine_scheduler(self.args.schedule, 1, 1, len(test_dataloader))
         loss_img = nn.CrossEntropyLoss()
         loss_txt = nn.CrossEntropyLoss()
 
@@ -528,33 +530,25 @@ class FinetuneCLIP(object):
                 image_features = model.encode_image(image)
             image_features /= image_features.norm(dim=-1, keepdim=True)
             if t <= task:  # update average accuracy for current batch
-                # logits_per_image = model.logit_scale.exp() * image_features @ text_features.T
-                # # logits_per_text = logits_per_image.t()
-                # # Predict the class by observing max activated logit.
-                # predicted_class = torch.argmax(logits_per_image, dim=1)
-                # # This becomes the groundtruth for images
-                # ground_truth_tta = predicted_class
-                # # Spanning this groundtruth vector across all the classes
-                # total_loss = loss_img(logits_per_image, ground_truth_tta)
                 if self.args.oracle:
                     text_features_predicted = text_features[label]
                 else:
                     logits_per_image_predicted_phase_1 = model.logit_scale.exp() * image_features @ text_features.T
-                    # Predict the class by observing max activated logit.
                     predicted_class = torch.argmax(logits_per_image_predicted_phase_1, dim=1)
-                    # This becomes the groundtruth for images
-                    # ground_truth_tta = predicted_class
-                    # Getting text features corresponding to the predicted class
                     text_features_predicted = text_features[predicted_class]
 
                 logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
                 logits_per_text_phase_2 = logits_per_image_phase_2.T
-                # print(logits_per_image_phase_2, "---------------------------")
                 total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch))/2.0
                 total_loss.backward()
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
                 self.update_model(model, optimizer, count=image.shape[0], task=t)
                 optimizer.zero_grad()
+                if self.args.ema:
+                    with torch.no_grad():
+                        m = momentum_schedule[iiter]
+                        for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                            param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss {loss.val:.4f} ({loss.avg: .4f}) \t')
 
