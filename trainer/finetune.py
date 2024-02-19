@@ -1,5 +1,7 @@
 import os
 import time
+import random
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -12,6 +14,7 @@ from clip.clip import tokenize
 from dataset.imagenet import ImageNet, zeroshot_classifier
 from metric import AverageMeter, ClassIncrementalMetric, TaskIncrementalMetric
 from trainer.utils import accuracy, get_ckpt_save_path, logging, resume
+from torch.utils.data import TensorDataset, ConcatDataset, DataLoader, sampler
 
 
 class FinetuneCLIP(object):
@@ -290,7 +293,6 @@ class FinetuneCLIP(object):
         return acc / n
 
     def evaluation(self, model, dataset, task, text_features_full, log=True, acc_matrix=None):
-
         unseen_metric = self.unseen_metric
         avg_metric = self.metric
         curr_acc_matrix = []
@@ -402,6 +404,7 @@ class FinetuneCLIP(object):
                 if self.args.tta_loss_mode == "teacher_student":
                     text_features_teacher = text_features_teacher_full.clone().detach()
 
+
         for t in range(self.args.num_tasks):
             if t>task:
                 break # TTA will happen only for tasks seen till now.
@@ -424,6 +427,97 @@ class FinetuneCLIP(object):
                 else:
                     raise Exception("TTA loss not implemented",  self.args.tta_loss_mode)
 
+    def get_tta_dataloader(self,dataset):
+        datasets_list = []
+        for t in range(self.args.num_tasks):
+            testset = dataset.get_dataset(t, is_train=False, is_tta=True)
+            datasets_list.append(testset)
+
+        concatenated_dataset_tta = ConcatDataset(datasets_list)
+        tta_indices = list(range(len(concatenated_dataset_tta)))
+        random.shuffle(tta_indices)
+        tta_sampler = sampler.SubsetRandomSampler(tta_indices)
+        tta_dataloader = DataLoader(concatenated_dataset_tta, batch_size=self.args.batch_size, sampler=tta_sampler)
+
+        return tta_dataloader
+
+    def tta_with_merged_data(self, teacher_model, model, dataset, task, text_features_full, text_features_teacher_full):
+        tta_dataloader = self.get_tta_dataloader(dataset)
+        optimizer = self.get_optimizer(model)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        loss_img = nn.CrossEntropyLoss()
+        loss_txt = nn.CrossEntropyLoss()
+        loss = AverageMeter()
+        momentum_schedule = self.cosine_scheduler(self.args.schedule, 1, self.args.tta_epochs, len(tta_dataloader))
+
+        # Mask out unseen classes
+        if task < dataset.num_tasks - 1:
+            unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes[task + 1:], axis=None)).to(torch.long)
+            text_features = text_features_full.clone().detach()
+            text_features[unseen_class_idx] = 0
+            text_features_teacher = text_features_teacher_full.clone().detach()
+            text_features_teacher[unseen_class_idx] = 0
+        else:
+            text_features = text_features_full.clone().detach()
+            text_features_teacher = text_features_teacher_full.clone().detach()
+
+        for e in range(self.args.tta_epochs):
+            for iiter, (image, label, _) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e+1} epoch", total=len(tta_dataloader)):
+                image = image.to(device)
+                label = label.to(device)
+                ground_truth_batch = torch.arange(len(image), dtype=torch.long, device=self.args.device)
+                # ground_truth_txts = torch.arange(self.num_classes, dtype=torch.long, device=self.args.device)
+                with torch.no_grad():
+                    image_features = model.encode_image(image)
+                    teacher_image_features = teacher_model.encode_image(image)  # # Obtain image features from Teacher
+
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+                teacher_image_features /= teacher_image_features.norm(dim=-1, keepdim=True)
+
+                if self.args.oracle:
+                    predicted_class = label
+                else:
+                    if self.args.tta_loss_mode == "teacher_student":
+                        logits_per_image_teacher = teacher_model.logit_scale.exp() * teacher_image_features @ text_features_teacher.T
+                        logits_per_image_student = model.logit_scale.exp() * image_features @ text_features.T
+                        max_teacher_logit, teacher_index = torch.max(logits_per_image_teacher, dim=1)
+                        max_student_logit, student_index = torch.max(logits_per_image_student, dim=1)
+                        predicted_class = torch.where(max_teacher_logit > max_student_logit, teacher_index, student_index)
+                    elif self.args.tta_loss_mode == "base":
+                        logits_per_image_predicted_phase_1 = model.logit_scale.exp() * image_features @ text_features.T
+                        predicted_class = torch.argmax(logits_per_image_predicted_phase_1, dim=1)
+                    else:
+                        raise Exception("TTA loss not implemented", self.args.tta_loss_mode)
+
+                text_features_predicted = text_features[predicted_class]
+                logits_per_image_phase_2 = torch.mul(model.logit_scale.exp() * image_features @ text_features_predicted.T, 100)
+                logits_per_text_phase_2 = logits_per_image_phase_2.T
+                total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch)) / 2.0
+                total_loss.backward()
+                loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
+                self.update_model(model, optimizer, count=image.shape[0])
+                optimizer.zero_grad()
+
+                with torch.no_grad():  # Updating the Teacher via EMA
+                    m = momentum_schedule[iiter]
+                    for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                        param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+                if iiter % self.args.print_frequency == 0:
+                    print(f'TTA Loss per batch {loss.val:.4f} ({loss.avg: .4f}) \t')
+                if self.args.sanity:
+                    break
+
+    def get_optimizer(self, model):
+        if self.args.optimizer == 'adam':
+            optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6, weight_decay=self.args.wd)
+        elif self.args.optimizer == 'sgd':
+            optimizer = optim.SGD(model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
+        elif self.args.optimizer == 'adamw':
+            optimizer = optim.AdamW(model.parameters(), lr=self.args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.2)
+        else:
+            raise NotImplementedError
+        optimizer.zero_grad()
+        return optimizer
 
     def compute_tta_teacher_student_loss(self,t, testset, teacher_model, model, task, text_features, text_features_teacher):
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -487,29 +581,14 @@ class FinetuneCLIP(object):
 
     def compute_tta_loss(self, t, testset, teacher_model, model, task, text_features):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-       
-        if self.args.optimizer == 'adam':
-            optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6,
-                                   weight_decay=self.args.wd)
-        elif self.args.optimizer == 'sgd':
-            optimizer = optim.SGD(model.parameters(), lr=self.args.lr,
-                                  weight_decay=self.args.wd)
-        elif self.args.optimizer == 'adamw':
-            optimizer = optim.AdamW(model.parameters(), lr=self.args.lr, betas=(
-                0.9, 0.999), eps=1e-8, weight_decay=0.2)
-
-        else:
-            raise NotImplementedError
-
+        optimizer = self.get_optimizer(model)
         self.unfreeze_model(model)
         # batch_time = AverageMeter()
         loss = AverageMeter()
-        optimizer.zero_grad()
         test_dataloader = DataLoader(testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
         momentum_schedule = self.cosine_scheduler(self.args.schedule, 1, 1, len(test_dataloader))
         loss_img = nn.CrossEntropyLoss()
         loss_txt = nn.CrossEntropyLoss()
-
         for iiter, (image, label, _) in tqdm(enumerate(test_dataloader), desc=f"TTA for {t}", total=len(test_dataloader)):
             image = image.to(device)
             label = label.to(device)

@@ -43,9 +43,10 @@ def get_time_stamp_for_saving_output(args):
     date_time = date_time.replace(", ", "_")
     date_time = date_time.replace("/", "_")
     args.timestamp = date_time
-    print(args.save_path.split("/")[-2])
-    job_id = args.save_path.split("/")[-2].split(".")[-2]
-    # job_id = 280
+    if args.sanity:
+        job_id = 280
+    else:
+        job_id = args.save_path.split("/")[-2].split(".")[-2]
     args.job_id = job_id
     dir_name = str(job_id) + "_" + str(date_time)
     save_dir_path = os.path.join(args.save_path, dir_name)
@@ -231,6 +232,7 @@ def main(args):
         wandb.init(# put your wandb initiation
 
         )
+
     save_dir_path = get_time_stamp_for_saving_output(args)
 
     # set up model
@@ -261,7 +263,7 @@ def main(args):
     args.scenario = dataset.scenario
     Trainer = METHOD[args.method](args)
     if args.sanity:
-        args.batch_size=8
+        args.batch_size=2
 
     save_config_write_to_file(save_dir_path, args)
 
@@ -271,13 +273,8 @@ def main(args):
         if hasattr(dataset, 'classifier'):
             text_features_full = dataset.classifier(
                 dataset.class_name_full, model)
-        else:
-            text_inputs_full = torch.cat(
-                [tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
-            with torch.no_grad():
-                text_features_full = model.encode_text(text_inputs_full)
-                text_features_full /= text_features_full.norm(
-                    dim=1, keepdim=True)
+            text_features_teacher_full = dataset.classifier(dataset.class_name_full, teacher_model)
+
 
     for task in range(dataset.num_tasks):
         if args.sweep and task == 3:
@@ -286,11 +283,11 @@ def main(args):
         if args.evaluation:
             Trainer.only_evaluation(model, dataset, task)
             continue
-        Trainer.train(teacher_model, model, dataset, task)
+        # Trainer.train(teacher_model, model, dataset, task)
         if not args.ema:
             teacher_model.load_state_dict(model.state_dict())
         if args.tta_phase and task > 0:
-            Trainer.tta(teacher_model, model, dataset, task)
+            Trainer.tta_with_merged_data(teacher_model, model, dataset, task, text_features_full, text_features_teacher_full)
         print("------------------- Evaluation of Student model ----------------------")
         Trainer.evaluation(model, dataset, task, text_features_full, acc_matrix=acc_matrix_student)
 
