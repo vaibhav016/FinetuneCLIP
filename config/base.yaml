@@ -12,6 +12,8 @@ tta_loss_mode: "teacher_student"
 ema: False
 oracle: False
 schedule: 0.999
+aircraft_buffer_size: 250
+cifar100_buffer_size: 2000
 
 # base model and optimizer
 model: 'ViT-B/16'

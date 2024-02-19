@@ -38,7 +38,7 @@ class SplitAircraft(SplitCifar100):
         self.num_tasks = 10
         if args.joint:
             self.num_tasks = 1
-        self.buffer_size = int(250 * args.buffer_size)
+        self.buffer_size = int(args.aircraft_buffer_size * args.buffer_size) # default buffer size=250
         self.scenario = 'class_incremental'
 
         self.task = 0
