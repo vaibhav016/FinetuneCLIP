@@ -442,6 +442,7 @@ class FinetuneCLIP(object):
         return tta_dataloader
 
     def tta_with_merged_data(self, teacher_model, model, dataset, task, text_features_full, text_features_teacher_full):
+        self.unfreeze_model(model)
         tta_dataloader = self.get_tta_dataloader(dataset)
         optimizer = self.get_optimizer(model)
         device = "cuda" if torch.cuda.is_available() else "cpu"

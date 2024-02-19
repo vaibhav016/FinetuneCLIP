@@ -275,7 +275,6 @@ def main(args):
                 dataset.class_name_full, model)
             text_features_teacher_full = dataset.classifier(dataset.class_name_full, teacher_model)
 
-
     for task in range(dataset.num_tasks):
         if args.sweep and task == 3:
             break
@@ -283,7 +282,7 @@ def main(args):
         if args.evaluation:
             Trainer.only_evaluation(model, dataset, task)
             continue
-        # Trainer.train(teacher_model, model, dataset, task)
+        Trainer.train(teacher_model, model, dataset, task)
         if not args.ema:
             teacher_model.load_state_dict(model.state_dict())
         if args.tta_phase and task > 0:
