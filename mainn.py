@@ -20,6 +20,7 @@ from dataset.cub import CUB
 from dataset.gtsrb import SplitGTSRB
 from trainer import METHOD
 import json
+from clip.clip import tokenize
 
 def random_seed(seed=42, rank=0):
     torch.manual_seed(seed + rank)
@@ -29,10 +30,11 @@ def random_seed(seed=42, rank=0):
 def save_config_write_to_file(save_dir_path, args):
     try:
         with open(os.path.join(save_dir_path, "configs.json"), "w") as fp:
-            json.dump(args, fp, )
+            json.dump(vars(args), fp,)
         print(f"************** Contents will be saved at {save_dir_path} ")
     except Exception as error:
         print(error)
+
 
 def get_time_stamp_for_saving_output(args):
     now = datetime.now()  # current date and time
@@ -41,6 +43,7 @@ def get_time_stamp_for_saving_output(args):
     date_time = date_time.replace(", ", "_")
     date_time = date_time.replace("/", "_")
     args.timestamp = date_time
+    print(args.save_path.split("/")[-2])
     job_id = args.save_path.split("/")[-2].split(".")[-2]
     # job_id = 280
     args.job_id = job_id
@@ -170,7 +173,7 @@ def calculate_metrics(accuracy_matrix):
     num_tasks = len(accuracy_matrix)
 
     # Calculate average accuracy
-    average_accuracy = [sum(i) / (len(i)) for i in accuracy_matrix]
+    average_accuracy = [sum(i) / (j+1) for j, i in enumerate(accuracy_matrix)]
     print(average_accuracy)
     # average_accuracy = sum(accuracy_matrix[i] for i in range(current_task))/current_task
 
@@ -184,14 +187,28 @@ def calculate_metrics(accuracy_matrix):
     return average_accuracy, backward_transfer
 
 
+def seed_everything(seed=1234):
+    print(f"************* seed is {seed} **************")
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # torch.use_deterministic_algorithms(True)   # it doesnt work with vit trainable backbone. Some operations are non-det.
+
+
 @hydra.main(version_base=None, config_path="config", config_name="base")
 def main(args):
     args = omegaconf.OmegaConf.to_container(args)
     args = Namespace(**args)
-
+    seed_everything(args.seed)
+    
     start = time.time()
-
-    random_seed(args.seed)
+    # random_seed(args.seed)
 
     if torch.cuda.is_available():
         # This enables tf32 on Ampere GPUs which is only 8% slower than
@@ -243,9 +260,24 @@ def main(args):
     args.num_tasks = dataset.num_tasks
     args.scenario = dataset.scenario
     Trainer = METHOD[args.method](args)
+    if args.sanity:
+        args.batch_size=8
+
+    save_config_write_to_file(save_dir_path, args)
 
     acc_matrix_teacher = []
     acc_matrix_student = []
+    if args.scenario == 'class_incremental':
+        if hasattr(dataset, 'classifier'):
+            text_features_full = dataset.classifier(
+                dataset.class_name_full, model)
+        else:
+            text_inputs_full = torch.cat(
+                [tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
+            with torch.no_grad():
+                text_features_full = model.encode_text(text_inputs_full)
+                text_features_full /= text_features_full.norm(
+                    dim=1, keepdim=True)
 
     for task in range(dataset.num_tasks):
         if args.sweep and task == 3:
@@ -260,12 +292,16 @@ def main(args):
         if args.tta_phase and task >= 0:
             Trainer.tta(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
-        Trainer.evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
+        Trainer.evaluation(model, dataset, task, text_features_full, acc_matrix=acc_matrix_student)
 
         print("------------------- Evaluation of Teacher model ----------------------")
-        Trainer.evaluation(teacher_model, dataset, task, acc_matrix=acc_matrix_teacher)
+        Trainer.evaluation(teacher_model, dataset, task, text_features_full, acc_matrix=acc_matrix_teacher)
 
         Trainer.save_checkpoint(model, task, args)
+
+        if task==2 and args.sanity:
+            args.num_tasks=3
+            break
 
     print(f'Total training time in hours: {(time.time() - start) / 3600: .3f}')
 
@@ -273,7 +309,7 @@ def main(args):
 
     if args.wandb:
         wandb.finish()
-    save_config_write_to_file(save_dir_path, args)
+   
 
     acc_avg_teacher, bt_teacher = calculate_metrics(acc_matrix_teacher)
     acc_avg_student, bt_student = calculate_metrics(acc_matrix_student)

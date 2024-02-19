@@ -289,29 +289,15 @@ class FinetuneCLIP(object):
         print(f'val acc {acc / n}')
         return acc / n
 
-    def evaluation(self, model, dataset, task, log=True, acc_matrix=None):
+    def evaluation(self, model, dataset, task, text_features_full, log=True, acc_matrix=None):
 
         unseen_metric = self.unseen_metric
         avg_metric = self.metric
         curr_acc_matrix = []
-
         if self.args.scenario == 'class_incremental':
-
-            if hasattr(dataset, 'classifier'):
-                text_features_full = dataset.classifier(
-                    dataset.class_name_full, model)
-            else:
-                text_inputs_full = torch.cat(
-                    [tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
-                with torch.no_grad():
-                    text_features_full = model.encode_text(text_inputs_full)
-                    text_features_full /= text_features_full.norm(
-                        dim=1, keepdim=True)
-
             if task < dataset.num_tasks - 1:
                 unseen_class_idx = torch.Tensor(np.concatenate(
                     dataset.task_classes[task + 1:], axis=None)).to(torch.long)
-
                 text_features = text_features_full.clone().detach()
                 text_features[unseen_class_idx] = 0
             else:
@@ -437,7 +423,6 @@ class FinetuneCLIP(object):
                     self.compute_tta_loss(t, testset, teacher_model, model, task, text_features)
                 else:
                     raise Exception("TTA loss not implemented",  self.args.tta_loss_mode)
-
 
 
     def compute_tta_teacher_student_loss(self,t, testset, teacher_model, model, task, text_features, text_features_teacher):

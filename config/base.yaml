@@ -21,7 +21,7 @@ lr: 7.5e-6
 wd: 0.2
 no_scheduler: False
 epochs: 10
-workers: 6
+workers: 1
 batch_size: 64
 evaluation: False
 sanity: False
