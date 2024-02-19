@@ -415,7 +415,7 @@ class FinetuneCLIP(object):
                     text_features_full /= text_features_full.norm(
                         dim=1, keepdim=True)
                 text_features = text_features_full
-            for e in range(1):
+            for e in range(self.args.tta_epochs):
                 # Training for 5 epochs in TTA
                 if self.args.tta_loss_mode == "teacher_student":
                     self.compute_tta_teacher_student_loss(t, testset, teacher_model, model, task, text_features, text_features_teacher)

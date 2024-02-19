@@ -289,7 +289,7 @@ def main(args):
         Trainer.train(teacher_model, model, dataset, task)
         if not args.ema:
             teacher_model.load_state_dict(model.state_dict())
-        if args.tta_phase and task >= 0:
+        if args.tta_phase and task > 0:
             Trainer.tta(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
         Trainer.evaluation(model, dataset, task, text_features_full, acc_matrix=acc_matrix_student)

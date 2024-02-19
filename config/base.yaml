@@ -6,14 +6,17 @@ balanced_buffer: True
 joint: False
 buffer_size: 1
 few_shot: 0
+aircraft_buffer_size: 250
+cifar100_buffer_size: 2000
+
+# hyperparams related to tta
+tta_epochs: 1
 tta_phase: True
 tta_loss_mode: "teacher_student"
 # it can be eiher base(normal tta loss), or teacher_student
 ema: False
 oracle: False
 schedule: 0.999
-aircraft_buffer_size: 250
-cifar100_buffer_size: 2000
 
 # base model and optimizer
 model: 'ViT-B/16'
