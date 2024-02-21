@@ -72,7 +72,7 @@ def plot_cl_metrics(args, average_accuracy_student, backward_transfer_student, a
     plt.plot(tasks, average_accuracy_student, marker="o", color="green", label=f"Test Accuracy Student: {average_accuracy_student[-1]:.2f}", )
     plt.axhline(average_accuracy_student[-1], color="green", linestyle="--")
 
-    if average_accuracy_teacher:
+    if average_accuracy_teacher is not None:
         plt.plot(tasks, average_accuracy_teacher, marker="o", color="red", label=f"Test Accuracy Teacher: {average_accuracy_teacher[-1]:.2f}", )
         plt.axhline(average_accuracy_teacher[-1], color="red", linestyle="--")
 
@@ -113,7 +113,7 @@ def plot_cl_metrics(args, average_accuracy_student, backward_transfer_student, a
     tasks = np.arange(1, args.num_tasks + 1)
     student_1st_task_acc = np.array([inner[0] for inner in acc_matrix_student])
 
-    if acc_matrix_teacher is not None:
+    if len(acc_matrix_teacher)==args.num_tasks:
         teacher_1st_task_acc = np.array([inner[0] for inner in acc_matrix_teacher])
         plt.plot(tasks, teacher_1st_task_acc, marker="o", color="red", label=f"Teacher: {teacher_1st_task_acc[-1]:.2f}", )
     plt.plot(tasks, student_1st_task_acc, marker="o", color="green", label=f"Student: {student_1st_task_acc[-1]:.2f}", )
@@ -131,7 +131,7 @@ def plot_cl_metrics(args, average_accuracy_student, backward_transfer_student, a
     ## Plot 2nd task accuracies
     plt.figure(figsize=(8, 4))
     tasks = np.arange(2, args.num_tasks + 1)
-    if acc_matrix_teacher is not None:
+    if len(acc_matrix_teacher)==args.num_tasks:
         plt.plot(tasks, np.array([inner[1] for inner in acc_matrix_teacher[1:]]), marker="o", color="red", label="Teacher", )
     plt.plot(tasks, np.array([inner[1] for inner in acc_matrix_student[1:]]), marker="o", color="green", label="Student", )
     if linear_probe:
@@ -148,7 +148,7 @@ def plot_cl_metrics(args, average_accuracy_student, backward_transfer_student, a
     ## Plot 3rd task accuracies
     plt.figure(figsize=(8, 4))
     tasks = np.arange(3, args.num_tasks + 1)
-    if acc_matrix_teacher is not None:
+    if len(acc_matrix_teacher)==args.num_tasks:
         plt.plot(tasks, np.array([inner[2] for inner in acc_matrix_teacher[2:]]), marker="o", color="red", label="Teacher", )
     plt.plot(tasks, np.array([inner[2] for inner in acc_matrix_student[2:]]), marker="o", color="green", label="Student", )
     if linear_probe:
@@ -269,30 +269,24 @@ def main(args):
 
     acc_matrix_teacher = []
     acc_matrix_student = []
-    if args.scenario == 'class_incremental':
-        if hasattr(dataset, 'classifier'):
-            text_features_full = dataset.classifier(
-                dataset.class_name_full, model)
-            text_features_teacher_full = dataset.classifier(dataset.class_name_full, teacher_model)
-
 
     for task in range(dataset.num_tasks):
         if args.sweep and task == 3:
             break
         print(f'Train task {task}')
         if args.evaluation:
-            Trainer.only_evaluation(model, dataset, task)
+            Trainer.only_evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
             continue
-        # Trainer.train(teacher_model, model, dataset, task)
+        Trainer.train(teacher_model, model, dataset, task)
         if not args.ema:
             teacher_model.load_state_dict(model.state_dict())
         if args.tta_phase and task > 0:
-            Trainer.tta_with_merged_data(teacher_model, model, dataset, task, text_features_full, text_features_teacher_full)
+            Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
-        Trainer.evaluation(model, dataset, task, text_features_full, acc_matrix=acc_matrix_student)
+        Trainer.evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
 
         print("------------------- Evaluation of Teacher model ----------------------")
-        Trainer.evaluation(teacher_model, dataset, task, text_features_full, acc_matrix=acc_matrix_teacher)
+        Trainer.evaluation(teacher_model, dataset, task, acc_matrix=acc_matrix_teacher)
 
         Trainer.save_checkpoint(model, task, args)
 
@@ -306,7 +300,6 @@ def main(args):
 
     if args.wandb:
         wandb.finish()
-   
 
     acc_avg_teacher, bt_teacher = calculate_metrics(acc_matrix_teacher)
     acc_avg_student, bt_student = calculate_metrics(acc_matrix_student)

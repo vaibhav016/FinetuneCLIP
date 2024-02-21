@@ -33,9 +33,9 @@ class FinetuneCLIP(object):
         self.full_metric = METRIC(args)
         self.zero_shot_metric = AverageMeter()
 
-    def only_evaluation(self, model, dataset, task):
+    def only_evaluation(self, model, dataset, task, acc_matrix=None):
         model, _, _, _ = resume(self.args, task, model)
-        self.evaluation(model, dataset, task)
+        self.evaluation(model, dataset, task, acc_matrix=acc_matrix)
 
     def unfreeze_model(self, model):
         model.train()
@@ -59,12 +59,12 @@ class FinetuneCLIP(object):
             trainset = dataset.get_dataset(
                 task, is_train=True, with_buffer=False)
             bufferset = dataset.get_buffer(task) if task > 0 else None
-            # print('buffer:', bufferset)
+            print('buffer:', bufferset)
         else:
             trainset = dataset.get_dataset(
                 task, is_train=True, with_buffer=(self.args.buffer_size > 0))
             bufferset = None
-        # print(trainset)
+        print(trainset)
         if bufferset:
             buffer_loader = self.get_loader(bufferset)
         else:
@@ -292,11 +292,22 @@ class FinetuneCLIP(object):
         print(f'val acc {acc / n}')
         return acc / n
 
-    def evaluation(self, model, dataset, task, text_features_full, log=True, acc_matrix=None):
+    def evaluation(self, model, dataset, task, log=True, acc_matrix=None):
         unseen_metric = self.unseen_metric
         avg_metric = self.metric
         curr_acc_matrix = []
         if self.args.scenario == 'class_incremental':
+            if hasattr(dataset, 'classifier'):
+                text_features_full = dataset.classifier(
+                    dataset.class_name_full, model)
+            else:
+                text_inputs_full = torch.cat(
+                    [tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
+                with torch.no_grad():
+                    text_features_full = model.encode_text(text_inputs_full)
+                    text_features_full /= text_features_full.norm(
+                        dim=1, keepdim=True)
+
             if task < dataset.num_tasks - 1:
                 unseen_class_idx = torch.Tensor(np.concatenate(
                     dataset.task_classes[task + 1:], axis=None)).to(torch.long)
@@ -337,6 +348,7 @@ class FinetuneCLIP(object):
 
         if not log:
             return avg_metric.average_accuracy[task], unseen_metric.average_accuracy[task]
+        print(f' ******* End evaluation: AVG accuracy {np.mean(curr_acc_matrix[:task + 1]):.2f}')
 
         print(
             f' * End evaluation: task accuracy top1 {self.metric.average_accuracy[task]:.2f}')
@@ -352,7 +364,7 @@ class FinetuneCLIP(object):
             f' * End evaluation: whole set evaluation top1 {self.full_metric.average_accuracy[task]:.2f}')
         # print(f'* End evaluation: ImageNet zero0shto top1 {zero_shot:.2f}')
 
-        acc_matrix.append(curr_acc_matrix)
+        acc_matrix.append(curr_acc_matrix[:task+1])
 
         if self.args.report_to:
             logging('task', task, 'average accuracy',
@@ -427,9 +439,11 @@ class FinetuneCLIP(object):
                 else:
                     raise Exception("TTA loss not implemented",  self.args.tta_loss_mode)
 
-    def get_tta_dataloader(self,dataset):
+    def get_tta_dataloader(self,dataset, task):
         datasets_list = []
         for t in range(self.args.num_tasks):
+            if t>task: # Tasks seen till now
+                break
             testset = dataset.get_dataset(t, is_train=False, is_tta=True)
             datasets_list.append(testset)
 
@@ -441,14 +455,29 @@ class FinetuneCLIP(object):
 
         return tta_dataloader
 
-    def tta_with_merged_data(self, teacher_model, model, dataset, task, text_features_full, text_features_teacher_full):
-        tta_dataloader = self.get_tta_dataloader(dataset)
+    def get_text_features(self, model, dataset):
+        if self.args.scenario == 'class_incremental':
+            if hasattr(dataset, 'classifier'):
+                text_features_full = dataset.classifier(dataset.class_name_full, model)
+            else:
+                text_inputs_full = torch.cat([tokenize(f"a photo of a {c}") for c in dataset.class_name_full]).cuda()
+                with torch.no_grad():
+                    text_features_full = model.encode_text(text_inputs_full)
+                    text_features_full /= text_features_full.norm(dim=1, keepdim=True)
+            return text_features_full
+
+    def tta_with_merged_data(self, teacher_model, model, dataset, task):
+        tta_dataloader = self.get_tta_dataloader(dataset, task)
         optimizer = self.get_optimizer(model)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         loss_img = nn.CrossEntropyLoss()
         loss_txt = nn.CrossEntropyLoss()
         loss = AverageMeter()
         momentum_schedule = self.cosine_scheduler(self.args.schedule, 1, self.args.tta_epochs, len(tta_dataloader))
+
+        # Obtain text features from the models.
+        text_features_full = self.get_text_features(model, dataset)
+        text_features_teacher_full = self.get_text_features(teacher_model, dataset)
 
         # Mask out unseen classes
         if task < dataset.num_tasks - 1:
