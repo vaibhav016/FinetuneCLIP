@@ -186,11 +186,13 @@ class FinetuneCLIP(object):
         print('Update Buffer....')
         dataset.update_buffer(task)
 
-    def eva_task_t(self, t, testset, model, task, text_features, text_features_full):
+    def eva_task_t(self, t, testset, model, task, text_features, text_features_full,  curr_acc_matrix=[]):
         zero_shot_metric = AverageMeter()
         avg_metric = AverageMeter()
         device = "cuda" if torch.cuda.is_available() else "cpu"
         test_dataloader = DataLoader(testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
+        correct = 0.0
+        total_samples = 0.0
         for (image, label, _) in tqdm(test_dataloader, desc=f"Evaluation for {t}", total=len(test_dataloader)):
             image = image.to(device)
             label = label.to(device)
@@ -201,14 +203,19 @@ class FinetuneCLIP(object):
                 logits = 100.0 * image_features @ text_features.T
                 acc = accuracy(logits, label)[0]
                 avg_metric.update(acc, image.size(0))
-
+                _, pred = logits.topk(1, 1, True, True)
+                correct += torch.sum(label == torch.squeeze(pred)).item()
+                total_samples += image.shape[0]
             # update zero-shot accuracy for current batch
             logits_full = 100.0 * image_features @ text_features_full.T
             acc_full = accuracy(logits_full, label)[0]
             zero_shot_metric.update(acc_full, image.size(0))
             if self.args.sanity:
                 break
-
+        if total_samples>0:
+            # This means that total_samples!=0
+            current_test_accuracy = 100 * (correct / total_samples)
+            curr_acc_matrix.append(current_test_accuracy)
         avg = avg_metric.avg if not torch.is_tensor(avg_metric.avg) else avg_metric.avg.item()
         unseen_avg = zero_shot_metric.avg if not torch.is_tensor(zero_shot_metric.avg) else zero_shot_metric.avg.item()
 
@@ -266,8 +273,8 @@ class FinetuneCLIP(object):
 
     def evaluation(self, model, dataset, task, log=True, acc_matrix=None, use_teacher_model=False):
         if use_teacher_model:
-            unseen_metric = self.unseen_metric
-            avg_metric = self.metric
+            unseen_metric = self.unseen_metric_teacher
+            avg_metric = self.metric_teacher
         else:
             unseen_metric = self.unseen_metric
             avg_metric = self.metric
@@ -297,8 +304,7 @@ class FinetuneCLIP(object):
                     text_features_full /= text_features_full.norm(dim=1, keepdim=True)
                 text_features = text_features_full
 
-            acc, acc_full, n = self.eva_task_t(t, testset, model, task, text_features, text_features_full)
-            curr_acc_matrix.append(acc)
+            acc, acc_full, n = self.eva_task_t(t, testset, model, task, text_features, text_features_full, curr_acc_matrix=curr_acc_matrix)
             # update for current task
             if use_teacher_model:
                 self.full_metric_teacher.update(task, t, acc_full, n=n)
@@ -407,7 +413,7 @@ class FinetuneCLIP(object):
         loss_txt = nn.CrossEntropyLoss()
         loss = AverageMeter()
         class_names = dataset.class_name_full
-        momentum_schedule = self.cosine_scheduler(self.args.schedule, 1, self.args.tta_epochs, len(tta_dataloader))
+        momentum_schedule = self.cosine_scheduler(self.args.tta_schedule, 1, self.args.tta_epochs, len(tta_dataloader))
 
         for e in range(self.args.tta_epochs):
             for iiter, (image, label, ground_truth_text) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e + 1} epoch", total=len(tta_dataloader)):
