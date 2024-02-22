@@ -278,9 +278,15 @@ def main(args):
             Trainer.only_evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
             continue
         Trainer.train(teacher_model, model, dataset, task)
-        if not args.ema:
+        if not args.ema and task>0:
             teacher_model.load_state_dict(model.state_dict())
-        if args.tta_phase and task > 0:
+        if args.tta_phase and task >= 0:
+            print("------------------- Evaluation of Student model before TTA ----------------------")
+            Trainer.evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
+
+            print("------------------- Evaluation of Teacher model before TTA ----------------------")
+            Trainer.evaluation(teacher_model, dataset, task, acc_matrix=acc_matrix_teacher)
+
             Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
         Trainer.evaluation(model, dataset, task, acc_matrix=acc_matrix_student)

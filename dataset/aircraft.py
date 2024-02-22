@@ -9,7 +9,7 @@ import numpy as np
 
 from torchvision.datasets import FGVCAircraft
 from dataset.aircraft_name import classes as class_names
-from dataset.aircraft_name import templates, order
+from dataset.aircraft_name import templates, order, templates2
 from dataset.cifar100 import SplitCifar100, CLIPDataset, FewShotCLIPDataset
 
 sys.path.append("..")
@@ -67,11 +67,11 @@ class SplitAircraft(SplitCifar100):
 
 def zeroshot_classifier(classnames, model):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    zeroshot_weights = []
     with torch.no_grad():
-        zeroshot_weights = []
         for classname in tqdm(classnames):
             texts = [template.format(classname)
-                     for template in templates]  # format with class
+                     for template in templates2]  # format with class
             texts = tokenize(texts).to(device)  # tokenize
             class_embeddings = model.encode_text(
                 texts)  # embed with text encoder
