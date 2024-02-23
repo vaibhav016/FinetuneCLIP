@@ -103,7 +103,10 @@ class FinetuneCLIP(object):
             logits_per_image_teacher, logits_per_text_teacher = teacher_model(images, texts)
 
         rd_loss = self.kl_div_loss(logits_per_image, logits_per_image_teacher)
-        total_loss = (loss_img(logits_per_image, ground_truth) + loss_txt(logits_per_text, ground_truth)) / 2 + rd_loss
+        total_loss = (loss_img(logits_per_image, ground_truth) + loss_txt(logits_per_text, ground_truth)) / 2
+        if self.args.rd_loss:
+            total_loss+=rd_loss
+
         return total_loss
 
     def update_model(self, model, optimizer, **kwargs):

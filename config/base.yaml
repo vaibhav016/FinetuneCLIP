@@ -18,6 +18,7 @@ ema: False
 oracle: False
 schedule: 0.9999
 tta_schedule: 0.8
+rd_loss: False
 
 # base model and optimizer
 model: 'ViT-B/16'
