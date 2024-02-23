@@ -76,7 +76,14 @@ class FinetuneCLIP(object):
 
         return train_dataloader, buffer_loader, total_batches
 
-    def compute_loss(self, batch, model, **kwargs):
+    def kl_div_loss(self, logits_per_image, logits_per_image_teacher):
+        predicted = torch.log_softmax(logits_per_image, dim=1)
+        target = torch.softmax(logits_per_image_teacher, dim=1)
+        rd_loss = nn.KLDivLoss(reduction="batchmean")
+        loss_value = rd_loss(predicted, target)
+        return loss_value
+
+    def compute_loss(self, batch, teacher_model, model, **kwargs):
         buffer = kwargs.get('buffer', None)
         epoch = kwargs.get('epoch', 0)
         loss_img = nn.CrossEntropyLoss()
@@ -92,8 +99,11 @@ class FinetuneCLIP(object):
         ground_truth = torch.arange(len(images), dtype=torch.long, device=self.args.device)
 
         logits_per_image, logits_per_text = model(images, texts)
+        with torch.no_grad():
+            logits_per_image_teacher, logits_per_text_teacher = teacher_model(images, texts)
 
-        total_loss = (loss_img(logits_per_image, ground_truth) + loss_txt(logits_per_text, ground_truth)) / 2
+        rd_loss = self.kl_div_loss(logits_per_image, logits_per_image_teacher)
+        total_loss = (loss_img(logits_per_image, ground_truth) + loss_txt(logits_per_text, ground_truth)) / 2 + rd_loss
         return total_loss
 
     def update_model(self, model, optimizer, **kwargs):
@@ -153,7 +163,7 @@ class FinetuneCLIP(object):
                 else:
                     batch_b = None
 
-                total_loss = self.compute_loss(batch, model, buffer=batch_b, epoch=epoch)
+                total_loss = self.compute_loss(batch, teacher_model, model, buffer=batch_b, epoch=epoch)
                 total_loss.backward()
 
                 self.update_model(model, optimizer, count=batch_size, epoch=epoch, task=task)
