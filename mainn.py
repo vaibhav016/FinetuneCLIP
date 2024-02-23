@@ -281,12 +281,6 @@ def main(args):
         if not args.ema and task>0:
             teacher_model.load_state_dict(model.state_dict())
         if args.tta_phase and task > 0:
-            print("------------------- Evaluation of Student model before TTA ----------------------")
-            Trainer.evaluation(model, dataset, task, acc_matrix=[])
-
-            print("------------------- Evaluation of Teacher model before TTA ----------------------")
-            Trainer.evaluation(teacher_model, dataset, task, acc_matrix=[])
-
             Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
         Trainer.evaluation(model, dataset, task, acc_matrix=acc_matrix_student)

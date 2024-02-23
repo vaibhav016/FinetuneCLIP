@@ -348,8 +348,9 @@ class FinetuneCLIP(object):
             print(
                 f' * End evaluation: whole set evaluation top1 {self.full_metric.average_accuracy[task]:.2f}')  # print(f'* End evaluation:  #
             # ImageNet zero0shto top1 {zero_shot:.2f}')
+        print("--------*  Current task accuracy matrix  *----------", curr_acc_matrix, "--------Avg-------", np.mean(curr_acc_matrix))
 
-        acc_matrix.append(curr_acc_matrix[:task + 1])
+        acc_matrix.append(curr_acc_matrix)
 
         if self.args.report_to:
             logging('task', task, 'average accuracy', self.metric.average_accuracy[task], self.args)

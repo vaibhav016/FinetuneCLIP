@@ -17,7 +17,7 @@ tta_loss_mode: "teacher_student"
 ema: False
 oracle: False
 schedule: 0.9999
-tta_schedule: 0.9
+tta_schedule: 0.8
 
 # base model and optimizer
 model: 'ViT-B/16'
