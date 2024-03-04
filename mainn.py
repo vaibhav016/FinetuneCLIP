@@ -15,6 +15,7 @@ from clip import clip
 from dataset.aircraft import SplitAircraft
 from dataset.birdsnap import SplitBirdsnap
 from dataset.cars import SplitCars
+from dataset.cars_vaibhav import SplitCarsV
 from dataset.cifar100 import SplitCifar100
 from dataset.cub import CUB
 from dataset.gtsrb import SplitGTSRB
@@ -246,7 +247,7 @@ def main(args):
     if args.dataset == 'cifar100':
         dataset = SplitCifar100(args, args.data, transform)
     elif args.dataset == 'cars':
-        dataset = SplitCars(args, transform=transform)
+        dataset = SplitCarsV(args, transform=transform)
     elif args.dataset == 'cub':
         dataset = CUB(args, transform=transform)
     elif args.dataset == 'aircraft':
