@@ -83,7 +83,7 @@ class FinetuneCLIP(object):
         loss_value = rd_loss(predicted, target)
         return loss_value
 
-    def compute_loss(self, batch, teacher_model, model, **kwargs):
+    def compute_loss(self, batch, teacher_model, model, task, **kwargs):
         buffer = kwargs.get('buffer', None)
         epoch = kwargs.get('epoch', 0)
         loss_img = nn.CrossEntropyLoss()
@@ -102,11 +102,10 @@ class FinetuneCLIP(object):
         with torch.no_grad():
             logits_per_image_teacher, logits_per_text_teacher = teacher_model(images, texts)
 
-        rd_loss = self.kl_div_loss(logits_per_image, logits_per_image_teacher)
+        rd_loss = self.kl_div_loss(logits_per_text, logits_per_text_teacher)
         total_loss = (loss_img(logits_per_image, ground_truth) + loss_txt(logits_per_text, ground_truth)) / 2
-        if self.args.rd_loss:
+        if self.args.rd_loss and task>0: #it does not make sense to put rd loss for 1st task
             total_loss+=rd_loss
-
         return total_loss
 
     def update_model(self, model, optimizer, **kwargs):
@@ -166,7 +165,7 @@ class FinetuneCLIP(object):
                 else:
                     batch_b = None
 
-                total_loss = self.compute_loss(batch, teacher_model, model, buffer=batch_b, epoch=epoch)
+                total_loss = self.compute_loss(batch, teacher_model, model, task, buffer=batch_b, epoch=epoch)
                 total_loss.backward()
 
                 self.update_model(model, optimizer, count=batch_size, epoch=epoch, task=task)
