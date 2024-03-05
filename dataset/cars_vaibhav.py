@@ -207,7 +207,7 @@ class FewShotCLIPDataset(Dataset):
 class SplitCarsV(SplitCifar100):
     def __init__(self, args, root='./', transform=None):
         # root = '/Users/vaibhavsingh/Desktop/concordia_phd/TTA_datasets'
-        training_paths, test_paths = download_transform_data(root)
+        training_paths, test_paths = download_transform_data(args.data)
         random.shuffle(test_paths)
         test_files_halved = int(len(test_paths) / 2)
 

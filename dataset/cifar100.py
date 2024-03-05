@@ -95,7 +95,7 @@ class FewShotCLIPDataset(Dataset):
 
 class SplitCifar100(object):
     def __init__(self, args, root, transform=None, valid=False, num_tasks=10):
-        root = './'
+        # root = './'
         self.trainset = CIFAR100(
             root, train=True, transform=transform, download=True)
         self.testset = CIFAR100(
