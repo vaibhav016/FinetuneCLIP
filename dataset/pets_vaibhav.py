@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-from dataset.cars_name import order
+from dataset.pets_name import order
 from dataset.cifar100 import SplitCifar100
 from dataset.pets_name import classes as pet_names
 
@@ -30,7 +30,7 @@ class Pets(Dataset):
         # if image.mode != "RGB":
         #     # Convert grayscale to RGB by duplicating the single channel
         #     image = image.convert("RGB")
-        image = self.transform(image)
+        image = self.transform(image) if self.transform is not None else image
         labels = data[1]
 
         return image, labels

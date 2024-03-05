@@ -49,7 +49,7 @@ class FrozenCLIP(object):
     def only_evaluation(self, model, dataset, task):
         pass
 
-    def train(self, model, dataset, task):
+    def train(self, teacher_model, student_model, dataset, task):
         pass
 
     def zero_shot_evaluation(self, model, transform, device):
@@ -72,7 +72,7 @@ class FrozenCLIP(object):
             metric.update(acc, image.size(0))
         return metric.avg.item()
 
-    def evaluation(self, model, dataset, task):
+    def evaluation(self, model, dataset, task, acc_matrix=None, use_teacher_model=False):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         metric = AverageMeter()
         testset = dataset.get_dataset(task, is_train=False)
@@ -111,9 +111,10 @@ class FrozenCLIP(object):
             acc = accuracy(logits, label, topk=(1,))[0]
             metric.update(acc.item(), image.size(0))
 
-        if task == 0:
-            self.held_out = self.held_out_evaluation(model, dataset.transform) if not (
-                self.args.debug or self.args.sweep) else 0
+
+        # if task == 0:
+        #     self.held_out = self.held_out_evaluation(model, dataset.transform) if not (
+        #         self.args.debug or self.args.sweep) else 0
 
         print(f'Accuracy for Task {task}: {metric.avg}')
         print(f'Held out accuracy {self.held_out: .2f}')
@@ -127,6 +128,6 @@ class FrozenCLIP(object):
                     statistics.mean(self.metric[:task+1]), self.args)
             logging('task', task, 'held out accuracy',
                     self.held_out, self.args)
-
+        
     def save_checkpoint(self, model, task, args):
         pass

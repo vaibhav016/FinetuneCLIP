@@ -16,6 +16,7 @@ from dataset.aircraft import SplitAircraft
 from dataset.birdsnap import SplitBirdsnap
 from dataset.cars import SplitCars
 from dataset.cars_vaibhav import SplitCarsV
+from dataset.pets_vaibhav import SplitPetsV
 from dataset.cifar100 import SplitCifar100
 from dataset.cub import CUB
 from dataset.cub_vaibhav import CUBV
@@ -254,7 +255,7 @@ def main(args):
     elif args.dataset == 'aircraft':
         dataset = SplitAircraft(args, transform=transform)
     elif args.dataset == 'pets':
-        dataset = Pets(args, transform=transform)
+        dataset = SplitPetsV(args, transform=transform)
     elif args.dataset == 'birdsnap':
         dataset = SplitBirdsnap(args, transform=transform)
     elif args.dataset == 'gtsrb':
@@ -284,6 +285,7 @@ def main(args):
         Trainer.train(teacher_model, model, dataset, task)
         if not args.ema and task>0:
             teacher_model.load_state_dict(model.state_dict())
+        
         if args.tta_phase and task > 0:
             Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
