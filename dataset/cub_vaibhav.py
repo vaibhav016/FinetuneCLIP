@@ -3,6 +3,22 @@ import datasets
 from clip.clip import tokenize
 from torch.utils.data import Dataset
 import numpy as np
+import sys
+
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+from tqdm import tqdm
+import pandas as pd
+from PIL import Image
+from datasets import load_dataset,Features,Value
+import csv
+import os
+import glob
+import random
+from dataset.cars_name import templates, order
+from dataset.cifar100 import SplitCifar100
+
 order = [51,  94,  55,  35, 170, 177,  20,  85,  50,  36,  30,  76,   5, 136, 182,  82,  25, 169, 166, 178,
          74,  53,  32, 184, 160, 179, 138, 140,  27,  12,  48,  57, 145,  28,  19, 162, 175, 121,  18,  72,
          101,  69,  49, 115, 181,  15, 193,  37, 111,   0, 158,  33,  11,  47,  80, 126, 183,  16, 198,  91,
@@ -46,9 +62,10 @@ class CLIPDataset(Dataset):
 
     def __getitem__(self, idx):
         index = int(self.idx[idx])
-        image = self.transform(self.data[index]['image'])
-        # name = self.data[index]['clip_tags_ViT_B_16_simple_specific']
-        label = int(self.data[index]['label'])
+        # image = self.transform(self.data[index]['image'])
+        # # name = self.data[index]['clip_tags_ViT_B_16_simple_specific']
+        # label = int(self.data[index]['label'])
+        image, label = self.data[index]
         name = cub_name[label]
         text = tokenize(f'a photo of a {name}')[0]
         return image, label, text
@@ -99,13 +116,107 @@ class FewShotCLIPDataset(Dataset):
         return image, label, text
 
 
-class CUB(SplitCifar100):
+class Cub(Dataset):
+    def __init__(self, path_dict_with_labels, transform=None, config=None, resize_image=224):
+        # transforms: none  # Can be 1) autoaugment, 2) augmix, 3) randaugment, 4) trivialaugment, 5) manual, 6) none
+        self.image_paths_dict_with_labels = path_dict_with_labels
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image_paths_dict_with_labels)
+
+    def __getitem__(self, idx):
+        data = self.image_paths_dict_with_labels[idx]
+        # print(data)
+        image = Image.open(data[0])
+        # if image.mode != "RGB":
+        #     # Convert grayscale to RGB by duplicating the single channel
+        #     image = image.convert("RGB")
+        image = self.transform(image) if self.transform is not None else image
+        labels = data[1]
+
+        return image, labels, idx
+
+
+def download_transform_data(data_directory):
+    if os.path.isdir(os.path.join(data_directory, "CUB_200_2011")):
+        print("CUB data downloaded")
+    else:
+        print("Download data from https://data.caltech.edu/records/65de6-vp158")  # TODO implement data downloading
+    data_directory = os.path.join(data_directory, "CUB_200_2011")
+    images_dir = os.path.join(data_directory, "images/")
+
+    df = pd.read_csv(os.path.join(data_directory, "images.txt"), sep=" ", header=None, names=["image_id", "image_name"], )
+    df["class_name"] = df["image_name"].apply(lambda x: x.split("/")[0])
+    df["image_name"] = df["image_name"].apply(lambda x: os.path.join(images_dir, x))
+
+    df2 = pd.read_csv(os.path.join(data_directory, "classes.txt"), sep=" ", header=None, names=["label", "class_name"], )
+
+    df3 = pd.read_csv(os.path.join(data_directory, "image_class_labels.txt"), sep=" ", header=None, names=["image_id", "class_id"], )
+
+    df4 = pd.read_csv(os.path.join(data_directory, "train_test_split.txt"), sep=" ", header=None, names=["image_id", "is_train"], )
+
+    df = df.merge(df2, on="class_name", how="inner")
+    df = df.merge(df3, on="image_id", how="inner")
+    df = df.merge(df4, on="image_id", how="inner")
+
+    training_paths = []
+    test_paths = []
+    for i, j in tqdm(df.iterrows()):
+        if j["is_train"] == 1:
+            training_paths.append((j["image_name"], j["class_id"] - 1))
+        else:
+            test_paths.append((j["image_name"], j["class_id"] - 1))
+
+    print(len(training_paths), len(test_paths))
+    return training_paths, test_paths
+
+
+def build_data_loaders(data_directory):
+    training_paths, test_paths = download_transform_data(data_directory)
+    random.shuffle(test_paths)
+    test_files_halved = int(len(test_paths) / 2)
+
+    ### Overiding tasks, classes_per_tasks and output_classes to avoid mistakes during runtime in config file
+    config.data_config["tasks"] = 20
+    config.data_config["classes_per_task"] = 10
+    config.train_config["output_classes"] = 200
+
+    # Halve the test data. One half will go for testing, and other half will go for tta
+    tta_paths = test_paths[:test_files_halved]
+    test_eval_paths = test_paths[test_files_halved:]
+
+    if config.train_config["training_mode"] == "cl":
+        return cl_data(training_paths, test_eval_paths, Cub, config)
+    elif config.train_config["training_mode"] == "joint":
+        return joint_data(training_paths, test_eval_paths, Cub, config)
+    elif config.train_config["training_mode"] in ["tta_cl", "tta_cl_rmt", "lwf", "ematsp", "tta_cl_shot", "tta_cl_shot_dino_supervised",
+                                                  "tta_cl_shot_dino"]:
+        return tta_cl_data(training_paths, test_eval_paths, tta_paths, Cub, config)
+    else:
+
+        raise Exception("Incorrect training mode")
+
+
+class CUBV(SplitCifar100):
     def __init__(self, args, root='./', transform=None):
-        root = './'
-        self.trainset = datasets.load_dataset(
-            'alkzar90/CC6204-Hackaton-Cub-Dataset', cache_dir=root, split='train')
-        self.testset = datasets.load_dataset(
-            'alkzar90/CC6204-Hackaton-Cub-Dataset', cache_dir=root, split='test')
+        root = args.data
+        training_paths, test_paths = download_transform_data(args.data)
+        random.shuffle(test_paths)
+        test_files_halved = int(len(test_paths) / 2)
+
+        # Halve the test data. One half will go for testing, and other half will go for tta
+        tta_paths = test_paths[:test_files_halved]
+        test_eval_paths = test_paths[test_files_halved:]
+
+        self.trainset = Cub(training_paths)
+        self.testset = Cub(test_eval_paths)
+        self.ttaset = Cub(tta_paths)
+
+        self.trainset.targets = [i[1] for i in self.trainset]
+        self.ttaset.targets = [i[1] for i in self.ttaset]
+        self.testset.targets = [i[1] for i in self.testset]
+
         self.transform = transform
         self.root = root
 

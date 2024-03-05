@@ -97,9 +97,9 @@ class SplitCifar100(object):
     def __init__(self, args, root, transform=None, valid=False, num_tasks=10):
         # root = './'
         self.trainset = CIFAR100(
-            root, train=True, transform=transform, download=True)
+            args.data, train=True, transform=transform, download=True)
         self.testset = CIFAR100(
-            root, train=False, transform=transform, download=True)
+            args.data, train=False, transform=transform, download=True)
         self.transform = transform
 
         test_data_len = len(self.testset)

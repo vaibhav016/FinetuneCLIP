@@ -18,6 +18,7 @@ from dataset.cars import SplitCars
 from dataset.cars_vaibhav import SplitCarsV
 from dataset.cifar100 import SplitCifar100
 from dataset.cub import CUB
+from dataset.cub_vaibhav import CUBV
 from dataset.gtsrb import SplitGTSRB
 from trainer import METHOD
 import json
@@ -250,7 +251,7 @@ def main(args):
     elif args.dataset == 'cars':
         dataset = SplitCarsV(args, transform=transform)
     elif args.dataset == 'cub':
-        dataset = CUB(args, transform=transform)
+        dataset = CUBV(args, transform=transform)
     elif args.dataset == 'aircraft':
         dataset = SplitAircraft(args, transform=transform)
     elif args.dataset == 'birdsnap':
