@@ -135,7 +135,7 @@ class Cub(Dataset):
         image = self.transform(image) if self.transform is not None else image
         labels = data[1]
 
-        return image, labels, idx
+        return image, labels
 
 
 def download_transform_data(data_directory):
@@ -240,8 +240,8 @@ class CUBV(SplitCifar100):
 
         self.get_full_class_name(self.trainset)
         print(self.class_name_full)
-        self.trainset.targets = self.trainset['label']
-        self.testset.targets = self.testset['label']
+        # self.trainset.targets = self.trainset['label']
+        # self.testset.targets = self.testset['label']
 
         classes = order
 
