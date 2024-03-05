@@ -246,7 +246,6 @@ def main(args):
     args.visual_layers = len(model.visual.transformer.resblocks)
 
     if args.dataset == 'cifar100':
-        print(args.data)
         dataset = SplitCifar100(args, args.data, transform)
     elif args.dataset == 'cars':
         dataset = SplitCarsV(args, transform=transform)
@@ -254,6 +253,8 @@ def main(args):
         dataset = CUBV(args, transform=transform)
     elif args.dataset == 'aircraft':
         dataset = SplitAircraft(args, transform=transform)
+    elif args.dataset == 'pets':
+        dataset = Pets(args, transform=transform)
     elif args.dataset == 'birdsnap':
         dataset = SplitBirdsnap(args, transform=transform)
     elif args.dataset == 'gtsrb':
