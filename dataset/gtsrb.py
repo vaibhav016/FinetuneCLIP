@@ -13,7 +13,7 @@ from torch.utils.data import random_split
 
 class SplitGTSRB(SplitCifar100):
     def __init__(self, args, root='./', transform=None):
-
+        root = args.data
         self.trainset = GTSRB(root, split='train',
                               transform=transform, download=True)
         self.testset = GTSRB(root, split='test',
