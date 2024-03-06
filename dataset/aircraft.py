@@ -17,7 +17,7 @@ sys.path.append("..")
 
 class SplitAircraft(SplitCifar100):
     def __init__(self, args, root='./', transform=None):
-        root = './'
+        root = args.data
         self.trainset = FGVCAircraft(
             root, split='train', transform=transform,download=True)
         self.testset = FGVCAircraft(root, split='test', transform=transform,download=True)

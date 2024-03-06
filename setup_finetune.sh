@@ -1,7 +1,7 @@
 #!/bin/bash
-module restore
-module load python/3.8
-source clip_env/bin/activate
+# module restore
+module load gcc/9.3.0 arrow/8 python/3.8
+source /clip_venv/bin/activate
 mkdir $SLURM_TMPDIR/output
 
 cp ../aircrafts_data.zip $SLURM_TMPDIR

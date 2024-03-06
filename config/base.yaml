@@ -14,7 +14,7 @@ tta_epochs: 1
 tta_phase: True
 tta_loss_mode: "teacher_student"
 # it can be eiher base(normal tta loss), or teacher_student
-ema: False
+ema: True
 oracle: False
 schedule: 0.9999
 tta_schedule: 0.8
