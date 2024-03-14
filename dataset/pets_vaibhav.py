@@ -192,7 +192,7 @@ class SplitPetsV(SplitCifar100):
         self.num_tasks = 10
         if args.joint:
             self.num_tasks = 1
-        self.buffer_size = int(20 * args.buffer_size)
+        self.buffer_size = int(args.buffer_size)
         self.scenario = 'class_incremental'
 
         self.task = 0

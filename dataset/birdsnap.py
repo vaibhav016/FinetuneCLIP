@@ -54,7 +54,7 @@ class SplitBirdsnap(SplitCifar100):
 
         self.num_tasks = num_tasks if not args.joint else 1
 
-        self.buffer_size = int(1500 * args.buffer_size)
+        self.buffer_size = int(args.buffer_size)
         self.scenario = 'class_incremental'
 
         self.task = 0

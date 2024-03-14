@@ -119,7 +119,7 @@ class SplitCifar100(object):
         self.num_tasks = num_tasks
         if args.joint:
             self.num_tasks = 1
-        self.buffer_size = int(args.cifar100_buffer_size * args.buffer_size) #default is 2000
+        self.buffer_size = int(args.buffer_size) #default is 2000
         self.scenario = 'class_incremental'
 
         self.task = 0

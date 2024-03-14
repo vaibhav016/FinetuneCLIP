@@ -17,7 +17,7 @@ sys.path.append("..")
 
 class SplitAircraft(SplitCifar100):
     def __init__(self, args, root='./', transform=None):
-        root = args.data
+        root = args.data + "/aircrafts_data/fgvc-aircraft-2013b"
         self.trainset = FGVCAircraft(
             root, split='train', transform=transform,download=True)
         self.testset = FGVCAircraft(root, split='test', transform=transform,download=True)
@@ -38,7 +38,7 @@ class SplitAircraft(SplitCifar100):
         self.num_tasks = 10
         if args.joint:
             self.num_tasks = 1
-        self.buffer_size = int(args.aircraft_buffer_size * args.buffer_size) # default buffer size=250
+        self.buffer_size = int(args.buffer_size) # default buffer size=250
         self.scenario = 'class_incremental'
 
         self.task = 0
