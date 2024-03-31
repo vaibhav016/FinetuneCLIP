@@ -16,8 +16,8 @@ tta_loss_mode: "teacher_student"
 # it can be eiher base(normal tta loss), or teacher_student
 ema: True
 oracle: False
-schedule: 0.9999
-tta_schedule: 0.8
+schedule: 1
+tta_schedule: 1
 rd_loss: False
 
 # base model and optimizer
@@ -33,9 +33,15 @@ batch_size: 64
 evaluation: False
 sanity: False
 
+#SPU config
+scale: 1
+update_all: True
+
 
 # method
-method: Finetune
+# method: Finetune
+method: SPU
+
 
 
 # device

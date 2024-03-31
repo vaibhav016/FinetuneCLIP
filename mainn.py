@@ -285,7 +285,10 @@ def main(args):
         Trainer.train(teacher_model, model, dataset, task)
         if not args.ema and task>0:
             teacher_model.load_state_dict(model.state_dict())
-        
+            
+        # if task == 0: # Checking a config where T=S only for 1st task.
+        #     teacher_model.load_state_dict(model.state_dict())
+
         if args.tta_phase and task > 0:
             Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
