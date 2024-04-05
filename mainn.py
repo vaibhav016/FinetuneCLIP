@@ -49,7 +49,8 @@ def get_time_stamp_for_saving_output(args):
     if args.sanity:
         job_id = 280
     else:
-        job_id = args.save_path.split("/")[-2].split(".")[-2]
+        job_id= 280
+        # job_id = args.save_path.split("/")[-2].split(".")[-2]
     args.job_id = job_id
     dir_name = str(job_id) + "_" + str(date_time)
     save_dir_path = os.path.join(args.save_path, dir_name)
@@ -282,13 +283,17 @@ def main(args):
         if args.evaluation:
             Trainer.only_evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
             continue
+        if args.method == "SPU":
+            Trainer.unfreeze_model(model)
+            Trainer.compute_importance(dataset, model, task)
         Trainer.train(teacher_model, model, dataset, task)
+        # Trainer.unfreeze_model(model)
         if not args.ema and task>0:
             teacher_model.load_state_dict(model.state_dict())
-            
+
         # if task == 0: # Checking a config where T=S only for 1st task.
         #     teacher_model.load_state_dict(model.state_dict())
-
+        
         if args.tta_phase and task > 0:
             Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
         print("------------------- Evaluation of Student model ----------------------")
