@@ -30,6 +30,7 @@ def random_seed(seed=42, rank=0):
     np.random.seed(seed + rank)
     random.seed(seed + rank)
 
+
 def save_config_write_to_file(save_dir_path, args):
     try:
         with open(os.path.join(save_dir_path, "configs.json"), "w") as fp:
@@ -49,8 +50,8 @@ def get_time_stamp_for_saving_output(args):
     if args.sanity:
         job_id = 280
     else:
-        job_id= 280
-        # job_id = args.save_path.split("/")[-2].split(".")[-2]
+        # job_id= 280
+        job_id = args.save_path.split("/")[-2].split(".")[-2]
     args.job_id = job_id
     dir_name = str(job_id) + "_" + str(date_time)
     save_dir_path = os.path.join(args.save_path, dir_name)
@@ -271,8 +272,6 @@ def main(args):
     if args.sanity:
         args.batch_size=2
 
-    save_config_write_to_file(save_dir_path, args)
-
     acc_matrix_teacher = []
     acc_matrix_student = []
 
@@ -307,8 +306,9 @@ def main(args):
         if task==2 and args.sanity:
             args.num_tasks=3
             break
-
+    
     print(f'Total training time in hours: {(time.time() - start) / 3600: .3f}')
+    args.time_elapsed_hrs = (time.time() - start) / 3600.0
 
     print("{}".format(args).replace(', ', ',\n'))
 
@@ -320,6 +320,6 @@ def main(args):
     plot_cl_metrics(args, acc_avg_student, bt_student, acc_matrix_student, average_accuracy_teacher=acc_avg_teacher,
                     backward_transfer_teacher=bt_teacher, acc_matrix_teacher=acc_matrix_teacher)
 
-
+    save_config_write_to_file(save_dir_path, args)
 if __name__ == '__main__':
     main()

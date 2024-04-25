@@ -46,7 +46,7 @@ class MASEDIT(FinetuneCLIP):
         self.alpha = 0.5
         self._lambda = self.args.scale
         self.importance_computed = False
-
+        self.ttl_mask ={}
         self.trainable_params = []
 
     def setup_importance(self, model):
@@ -71,7 +71,7 @@ class MASEDIT(FinetuneCLIP):
                     self.trainable_params.append(name)
             else:
                 param.requires_grad = False
-        print('Trainable parameters: ', self.trainable_params)
+        # print('Trainable parameters: ', self.trainable_params)
 
     def compute_importance(self, dataset, model, task):
         if task == 0:

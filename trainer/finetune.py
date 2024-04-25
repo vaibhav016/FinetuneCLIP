@@ -16,11 +16,39 @@ from dataset.imagenet import ImageNet, zeroshot_classifier
 from metric import AverageMeter, ClassIncrementalMetric, TaskIncrementalMetric
 from trainer.utils import accuracy, get_ckpt_save_path, logging, resume
 
+def zerolike_params_dict(model, device=None):
+    """
+    Create a list of (name, parameter), where parameter is initalized to zero.
+    The list has as many parameters as model, with the same size.
+
+    :param model: a pytorch model
+    """
+
+    return [
+        (k, torch.zeros_like(p).to(p.device if (device == None) else device))
+        for k, p in model.named_parameters()
+    ]
+
+
+def copy_params_dict(model, copy_grad=False, device=None):
+    """
+    Create a list of (name, parameter), where parameter is copied from model.
+    The list has as many parameters as model, with the same size.
+
+    :param model: a pytorch model
+    :param copy_grad: if True returns gradients instead of parameter values
+    """
+
+    if copy_grad:
+        return [(k, p.grad.data.detach().clone()) for k, p in model.named_parameters()]
+    else:
+        return [(k, p.data.detach().clone().to(p.device if (device == None) else device)) for k, p in
+                model.named_parameters()]
+
 
 class FinetuneCLIP(object):
     def __init__(self, args):
         self.args = args
-
         self.num_classes = args.num_classes
         if args.scenario == 'class_incremental':
             METRIC = ClassIncrementalMetric
@@ -37,6 +65,7 @@ class FinetuneCLIP(object):
         self.unseen_metric_teacher = METRIC(args)
         self.full_metric_teacher = METRIC(args)
         self.zero_shot_metric_teacher = AverageMeter()
+        self.mask_ttl = {}
 
     def only_evaluation(self, model, dataset, task, acc_matrix=None):
         model, _, _, _ = resume(self.args, task, model)
@@ -108,7 +137,18 @@ class FinetuneCLIP(object):
             total_loss+=rd_loss
         return total_loss
 
-    def update_model(self, model, optimizer, **kwargs):
+    def update_model_ttl(self, model, optimizer, **kwargs):
+        if "spu_ttl" in kwargs:
+            if kwargs["spu_ttl"]:
+                #  print("********** SPU TTL Optim*************")
+                 with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        gradients = param.grad
+                        if gradients is not None:
+                            param.grad = self.mask_ttl[name] * param.grad
+                            # Update only the 1% most activated entries
+                            # param.data -= optimizer.param_groups[0]['lr'] * param.grad
+    
         optimizer.step()
 
     def get_batch_size(self, batch, **kwargs):
@@ -416,9 +456,27 @@ class FinetuneCLIP(object):
         else:
             text_features = text_features_full.clone().detach()
         return text_features
+    
+    def unfreeze_model_ttl(self, model):
+        model.train()
+        for name, param in model.named_parameters():
+            if self.args.update_all:
+                trainable_params = True
+            elif any(edit_layer in name for edit_layer in ['c_fc', 'visual.proj']):
+                trainable_params = True
+            else:
+                trainable_params = False
+
+            if trainable_params:
+                param.requires_grad = True
+                if name not in self.trainable_params:
+                    self.trainable_params.append(name)
+            else:
+                param.requires_grad = False
+        # print('Trainable parameters: ', self.trainable_params)
 
     def tta_with_merged_data(self, teacher_model, model, dataset, task):
-        self.unfreeze_model(model)
+        # self.unfreeze_model(model)
         tta_dataloader = self.get_tta_dataloader(dataset, task)
         optimizer = self.get_optimizer(model)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -427,6 +485,12 @@ class FinetuneCLIP(object):
         loss = AverageMeter()
         class_names = dataset.class_name_full
         momentum_schedule = self.cosine_scheduler(self.args.tta_schedule, 1, self.args.tta_epochs, len(tta_dataloader))
+        
+        if self.args.spu_ttl:
+            print("********** SPU TTL ***********")
+            self.compute_importance_ttl(tta_dataloader, model, task)
+            # print("trainable params", self.trainable_params, len(self.trainable_params))
+            # print("ttl masks", self.mask_ttl.keys(), len([self.mask_ttl.keys()]))
 
         for e in range(self.args.tta_epochs):
             for iiter, (image, label, ground_truth_text) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e + 1} epoch", total=len(tta_dataloader)):
@@ -471,13 +535,27 @@ class FinetuneCLIP(object):
                 total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch)) / 2.0
                 total_loss.backward()
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
-                self.update_model(model, optimizer, count=image.shape[0])
+                self.update_model_ttl(model, optimizer, count=image.shape[0], spu_ttl=self.args.spu_ttl)
                 optimizer.zero_grad()
+                
+                with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        gradients = param.grad
+                        if gradients is not None:
+                            param.grad = self.mask[name] * param.grad
+
 
                 with torch.no_grad():  # Updating the Teacher via EMA
                     m = momentum_schedule[iiter]
-                    for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
-                        param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+                    if self.args.method=="SPU":
+                        for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                            student_gradients = param_q.grad
+                            print(name_k, name_q, "------------------------")
+                            if student_gradients is not None:
+                                param_k.data.mul_(m*self.mask_ttl[name_k]).add_((1 - m) * param_q.detach().data*self.mask_ttl[name_k])
+                    else:
+                        for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                            param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss per batch {loss.val:.4f} ({loss.avg: .4f}) \t')
                 if self.args.sanity:
@@ -495,7 +573,87 @@ class FinetuneCLIP(object):
             raise NotImplementedError
         optimizer.zero_grad()
         return optimizer
+    
+    def setup_importance(self, model):
+        # Parameters before the first task starts
+        self.params_ttl = dict(copy_params_dict(model))
+        # Initialize Fisher information weight importance
+        self.importance_ttl = dict(zerolike_params_dict(model))
 
+    def compute_importance_ttl(self, tta_dataloader, model, task):
+        if task == 0:
+            self.setup_importance_ttl(model)
+        cur_importance = self.compute_importance_score_ttl(model, tta_dataloader, loss_type=self.args.select_loss_type, task=task)
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if name in self.trainable_params:
+                    if any(param in name for param in ['bias']) or self.args.sparsity == 1.0:
+                        self.mask_ttl[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+                        continue
+                    if name not in cur_importance.keys():
+                        print(f' importance of `{name} is none')
+                        continue
+                    importance = cur_importance[name]
+
+                    # sparse update of weight and  bias
+                    if self.args.score == 'norm':
+                        magnitudes = importance.abs()
+                    elif self.args.score == 'random':
+                        magnitudes = torch.randn(param.grad.shape).to(self.args.device)
+                    else:
+                        raise ValueError
+
+                    k = int(magnitudes.numel() * self.args.sparsity)
+
+                    topk_values, topk_indices = torch.topk(magnitudes.view(-1), k=k)
+                    self.mask_ttl[name] = torch.zeros_like(magnitudes).to(self.args.device)
+                    self.mask_ttl[name].view(-1)[topk_indices] = 1
+
+    def compute_importance_score_ttl(self, model, tta_dataloader, loss_type='l2', **kwargs):
+        # Initialize importance matrix
+        importance = dict(zerolike_params_dict(model, device=self.args.device))
+
+        # Do forward and backward pass to accumulate L2-loss gradients
+        model.train()
+        model.zero_grad()
+        total_batch = len(tta_dataloader)
+        num_batch_for_importance = total_batch * self.args.cur_importance_batch_percentage
+        print(f'Total batch for importance {total_batch}, use {num_batch_for_importance} batches')
+        stop_flag = 1
+
+        for num_batch, batch in enumerate(tqdm(tta_dataloader)):
+            stop_flag = 1
+            # Get batch
+            images, _, texts = batch
+            images = images.to(self.args.device)
+            texts = texts.to(self.args.device)
+
+            # Forward pass
+            logits_per_image, logits_per_text = model(images, texts)
+
+            # Average L2-Norm of the output
+            if loss_type == 'l2':
+                loss = torch.norm(logits_per_image, p="fro", dim=1).pow(2).mean()
+            elif loss_type == 'cn':
+                ground_truth = torch.arange(len(images), dtype=torch.long, device=self.args.device)
+                loss_img = nn.CrossEntropyLoss()
+                loss_txt = nn.CrossEntropyLoss()
+                loss = (loss_img(logits_per_image, ground_truth) + loss_txt(logits_per_text, ground_truth)) / 2
+            else:
+                raise ValueError
+            loss.backward()
+
+            # Accumulate importance
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    if param.grad is not None:
+                        importance[name].data += param.grad.clone()
+                        if importance[name].data.abs().min() < 1e-12:
+                            stop_flag = 0
+            if num_batch > num_batch_for_importance and stop_flag:
+                break
+
+        return importance
 
 class FinetuneFFN(FinetuneCLIP):
     def unfreeze_model(self, model):
