@@ -223,8 +223,18 @@ class FinetuneCLIP(object):
                 if self.args.ema:
                     with torch.no_grad():
                         m = momentum_schedule[iiter]
-                        for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
-                            param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+                        if self.args.method=="SPU":
+                            k = self.args.k
+                            for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                                # print(name_k, name_q, "------------------------")  
+                                mult_matrix_teacher = (k-m)*(self.mask[name_k]) + m
+                                mult_matrix_student = (m-k)*(self.mask[name_k]) + (1-m)
+                                # mult_matrix_teacher = (m-1.0)*(self.mask[name_k]) + 1.0
+                                # mult_matrix_student = (1.0-m)*(self.mask[name_k])
+                                param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
+                        else:
+                            for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                                param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
 
                 if self.args.sanity:
                     break
@@ -237,6 +247,9 @@ class FinetuneCLIP(object):
         model.eval()
         print('Update Buffer....')
         dataset.update_buffer(task)
+    
+    def update_model(self, model, optimizer, **kwargs):
+         optimizer.step()
 
     def eva_task_t(self, t, testset, model, task, text_features, text_features_full,  curr_acc_matrix=[]):
         zero_shot_metric = AverageMeter()
@@ -537,22 +550,31 @@ class FinetuneCLIP(object):
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
                 self.update_model_ttl(model, optimizer, count=image.shape[0], spu_ttl=self.args.spu_ttl)
                 optimizer.zero_grad()
-                
-                with torch.no_grad():
-                    for name, param in model.named_parameters():
-                        gradients = param.grad
-                        if gradients is not None:
-                            param.grad = self.mask[name] * param.grad
 
-
-                with torch.no_grad():  # Updating the Teacher via EMA
+                # Updating the Teacher via EMA
+                with torch.no_grad():  
                     m = momentum_schedule[iiter]
                     if self.args.method=="SPU":
-                        for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
-                            student_gradients = param_q.grad
-                            print(name_k, name_q, "------------------------")
-                            if student_gradients is not None:
-                                param_k.data.mul_(m*self.mask_ttl[name_k]).add_((1 - m) * param_q.detach().data*self.mask_ttl[name_k])
+                        if self.args.spu_ttl:
+                            k = self.args.k_ttl
+                            for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                                student_gradients = param_q.grad
+                                # print(name_k, name_q, "------------------------")
+                                if student_gradients is not None:
+                                    mult_matrix_teacher = (k-m)*(self.mask_ttl[name_k]) + m
+                                    mult_matrix_student = (m-k)*(self.mask_ttl[name_k]) + (1-m) 
+                                    # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
+                                    # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
+                                    param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
+                        else:
+                            k = self.args.k
+                            for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                                # print(name_k, name_q, "------------------------")  
+                                mult_matrix_teacher = (k-m)*(self.mask_ttl[name_k]) + m
+                                mult_matrix_student = (m-k)*(self.mask_ttl[name_k]) + (1-m) 
+                                # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
+                                # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
+                                param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                     else:
                         for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
                             param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)

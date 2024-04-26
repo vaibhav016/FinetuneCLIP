@@ -107,18 +107,25 @@ class MASEDIT(FinetuneCLIP):
                         raise ValueError
 
                     k = int(magnitudes.numel() * self.args.sparsity)
+                    # print("magnitudes-----------",magnitudes.shape)
+                    # print("k-----", k)
 
                     topk_values, topk_indices = torch.topk(magnitudes.view(-1), k=k)
+                    # print("topkvaluse-------", topk_values.shape, topk_indices)
+                    
                     self.mask[name] = torch.zeros_like(magnitudes).to(self.args.device)
+                    # print("mask--------------", self.mask[name].shape)
                     self.mask[name].view(-1)[topk_indices] = 1
 
     def update_model(self, model, optimizer, **kwargs):
+        # print("----------- spu update --------------")
         count = kwargs.get('count', 0)
         epoch = kwargs.get('epoch', 0)
         with torch.no_grad():
             for name, param in model.named_parameters():
                 gradients = param.grad
                 if gradients is not None:
+                    # print("grad in update 2 22222 --------------")
                     param.grad = self.mask[name] * param.grad
                     # Update only the 1% most activated entries
                     # param.data -= optimizer.param_groups[0]['lr'] * param.grad
