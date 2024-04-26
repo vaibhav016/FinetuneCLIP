@@ -503,7 +503,7 @@ class FinetuneCLIP(object):
             print("********** SPU TTL ***********")
             self.compute_importance_ttl(tta_dataloader, model, task)
             # print("trainable params", self.trainable_params, len(self.trainable_params))
-            # print("ttl masks", self.mask_ttl.keys(), len([self.mask_ttl.keys()]))
+            print("ttl masks", self.mask_ttl.keys(), len(self.mask_ttl.keys()))
 
         for e in range(self.args.tta_epochs):
             for iiter, (image, label, ground_truth_text) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e + 1} epoch", total=len(tta_dataloader)):
@@ -515,7 +515,6 @@ class FinetuneCLIP(object):
                 # Obtain text features for all the classes
                 text_features_full = self.get_text_features(model, dataset)
                 text_features_teacher_full = self.get_text_features(teacher_model, dataset)
-
                 text_features = self.mask_unseen_classes(text_features_full, task, dataset)
                 text_features_teacher = self.mask_unseen_classes(text_features_teacher_full, task, dataset)
                 with torch.no_grad():
@@ -558,20 +557,18 @@ class FinetuneCLIP(object):
                         if self.args.spu_ttl:
                             k = self.args.k_ttl
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
-                                student_gradients = param_q.grad
                                 # print(name_k, name_q, "------------------------")
-                                if student_gradients is not None:
-                                    mult_matrix_teacher = (k-m)*(self.mask_ttl[name_k]) + m
-                                    mult_matrix_student = (m-k)*(self.mask_ttl[name_k]) + (1-m) 
-                                    # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
-                                    # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
-                                    param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
+                                mult_matrix_teacher = (k-m)*(self.mask_ttl[name_k]) + m
+                                mult_matrix_student = (m-k)*(self.mask_ttl[name_k]) + (1-m) 
+                                # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
+                                # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
+                                param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                         else:
                             k = self.args.k
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 # print(name_k, name_q, "------------------------")  
-                                mult_matrix_teacher = (k-m)*(self.mask_ttl[name_k]) + m
-                                mult_matrix_student = (m-k)*(self.mask_ttl[name_k]) + (1-m) 
+                                mult_matrix_teacher = (k-m)*(self.mask[name_k]) + m
+                                mult_matrix_student = (m-k)*(self.mask[name_k]) + (1-m) 
                                 # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
                                 # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
                                 param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
