@@ -66,6 +66,7 @@ class FinetuneCLIP(object):
         self.full_metric_teacher = METRIC(args)
         self.zero_shot_metric_teacher = AverageMeter()
         self.mask_ttl = {}
+        self.prev_avg_grad = {}
 
     def only_evaluation(self, model, dataset, task, acc_matrix=None):
         model, _, _, _ = resume(self.args, task, model)
@@ -137,18 +138,18 @@ class FinetuneCLIP(object):
             total_loss+=rd_loss
         return total_loss
 
-    def update_model_ttl(self, model, optimizer, **kwargs):
-        if "spu_ttl" in kwargs:
-            if kwargs["spu_ttl"]:
-                #  print("********** SPU TTL Optim*************")
-                 with torch.no_grad():
-                    for name, param in model.named_parameters():
-                        gradients = param.grad
-                        if gradients is not None:
-                            param.grad = self.mask_ttl[name] * param.grad
-                            # Update only the 1% most activated entries
-                            # param.data -= optimizer.param_groups[0]['lr'] * param.grad
-    
+    def update_model_ttl(self, model, optimizer):
+        if self.args.batchwise_spu_ttl:    
+            #  print("********** SPU TTL Optim*************")
+            with torch.no_grad():
+                for name, param in model.named_parameters():
+                    gradients = param.grad
+                    if gradients is not None:
+                        # print(self.mask_ttl.keys())
+                        param.grad = self.mask_ttl[name] * param.grad
+                        # Update only the 1% most activated entries
+                        # param.data -= optimizer.param_groups[0]['lr'] * param.grad
+
         optimizer.step()
 
     def get_batch_size(self, batch, **kwargs):
@@ -223,7 +224,7 @@ class FinetuneCLIP(object):
                 if self.args.ema:
                     with torch.no_grad():
                         m = momentum_schedule[iiter]
-                        if self.args.method=="SPU":
+                        if self.args.method=="SPU" and self.args.use_2_mom_supervised:
                             k = self.args.k
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 # print(name_k, name_q, "------------------------")  
@@ -488,6 +489,99 @@ class FinetuneCLIP(object):
                 param.requires_grad = False
         # print('Trainable parameters: ', self.trainable_params)
 
+    def check_similarity_gradients(self, model):
+        self.cosine_score_count = 0
+        self.total_params = 0
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                gradients = param.grad.detach().clone()
+                if gradients is not None:
+                    prev_avg_grad = self.prev_avg_grad[name]
+                    if len(gradients.shape)==2:
+                        curr_avg_grad_across_1st_dim = torch.mean(gradients, 1)
+                        prev_avg_grad_across_1st_dim = torch.mean(prev_avg_grad, 1)
+                    elif len(gradients.shape)==1:
+                        curr_avg_grad_across_1st_dim = gradients
+                        prev_avg_grad_across_1st_dim = prev_avg_grad
+                    else:
+                        continue                    
+                    self.total_params+=1
+                    cos = torch.nn.CosineSimilarity(dim=0, eps=1e-6)
+                    cosine_sim = cos(curr_avg_grad_across_1st_dim, prev_avg_grad_across_1st_dim)
+                    # print("cosine sim------------", cosine_sim)
+                    if cosine_sim.item()>self.args.cosine_threshold:
+                        self.cosine_score_count+=1
+                    # update the previous gradients by averging current and prev
+                    if len(prev_avg_grad.shape) == 2: 
+                        self.prev_avg_grad[name] = (prev_avg_grad+gradients)/gradients.shape[1]
+                    else:
+                        self.prev_avg_grad[name] =(prev_avg_grad+gradients)/gradients.shape[0]
+
+        print("---------counts---------------",self.cosine_score_count, self.total_params)
+        if self.cosine_score_count < 0.5 * self.total_params:
+            return False
+        return True
+
+    def compute_importance_score_batch(self, model, images, texts, loss_type="cn", ):
+        importance = dict(zerolike_params_dict(model, device=self.args.device))
+
+        # Do forward and backward pass to accumulate L2-loss gradients
+        model.train()
+        model.zero_grad()
+
+        images = images.to(self.args.device)
+        texts = texts.to(self.args.device)
+
+        # Forward pass
+        logits_per_image, logits_per_text = model(images, texts)
+
+        # Average L2-Norm of the output
+        if loss_type == 'l2':
+            loss = torch.norm(logits_per_image, p="fro", dim=1).pow(2).mean()
+        elif loss_type == 'cn':
+            ground_truth = torch.arange(len(images), dtype=torch.long, device=self.args.device)
+            loss_img = nn.CrossEntropyLoss()
+            loss_txt = nn.CrossEntropyLoss()
+            loss = (loss_img(logits_per_image, ground_truth) + loss_txt(logits_per_text, ground_truth)) / 2
+        else:
+            raise ValueError
+        loss.backward()
+
+        # Accumulate importance
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                if param.grad is not None:
+                    importance[name].data += param.grad.clone().detach()
+
+        return importance, loss
+
+    def compute_masks_ttl_batch(self, model, cur_importance):
+        ##### Originally here compute_importance_score_batch() was called ###########
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if name in self.trainable_params:
+                    if any(param in name for param in ['bias']) or self.args.sparsity == 1.0:
+                        self.mask_ttl[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+                        continue
+                    if name not in cur_importance.keys():
+                        print(f' importance of `{name} is none')
+                        continue
+                    importance = cur_importance[name]
+
+                    # sparse update of weight and  bias
+                    if self.args.score == 'norm':
+                        magnitudes = importance.abs()
+                    elif self.args.score == 'random':
+                        magnitudes = torch.randn(param.grad.shape).to(self.args.device)
+                    else:
+                        raise ValueError
+
+                    k = int(magnitudes.numel() * self.args.sparsity)
+
+                    topk_values, topk_indices = torch.topk(magnitudes.view(-1), k=k)
+                    self.mask_ttl[name] = torch.zeros_like(magnitudes).to(self.args.device)
+                    self.mask_ttl[name].view(-1)[topk_indices] = 1
+
     def tta_with_merged_data(self, teacher_model, model, dataset, task):
         # self.unfreeze_model(model)
         tta_dataloader = self.get_tta_dataloader(dataset, task)
@@ -498,12 +592,6 @@ class FinetuneCLIP(object):
         loss = AverageMeter()
         class_names = dataset.class_name_full
         momentum_schedule = self.cosine_scheduler(self.args.tta_schedule, 1, self.args.tta_epochs, len(tta_dataloader))
-        
-        if self.args.spu_ttl:
-            print("********** SPU TTL ***********")
-            self.compute_importance_ttl(tta_dataloader, model, task)
-            # print("trainable params", self.trainable_params, len(self.trainable_params))
-            print("ttl masks", self.mask_ttl.keys(), len(self.mask_ttl.keys()))
 
         for e in range(self.args.tta_epochs):
             for iiter, (image, label, ground_truth_text) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e + 1} epoch", total=len(tta_dataloader)):
@@ -542,33 +630,42 @@ class FinetuneCLIP(object):
                 predicted_text = tokenize(predicted_class_names)
                 predicted_text = predicted_text.to(device)
 
-                logits_per_image_phase_2, logits_per_text_phase_2 = model(image, predicted_text)
-                # logits_per_image_phase_oracle_2, logits_per_text_phase_oracle_2 = model(image, ground_truth_text)
-                total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch)) / 2.0
-                total_loss.backward()
+                if self.args.batchwise_spu_ttl:
+                    cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type)
+                    if iiter == 0:
+                        print("-----computing 1st time-----")
+                        self.compute_masks_ttl_batch(model, cur_importance)
+                        with torch.no_grad():
+                            for name, param in model.named_parameters():
+                                self.prev_avg_grad[name] = param.grad.clone().detach()
+                      ############################################################
+                    else:
+                        if not self.check_similarity_gradients(model):
+                            #### compute importance wrt to this batch ######
+                            print("-------------------orthogonal gradients so compute mask ------------------")
+                            self.compute_masks_ttl_batch(model, cur_importance)
+                     #############################################################
+                else:  
+                    logits_per_image_phase_2, logits_per_text_phase_2 = model(image, predicted_text)
+                    # logits_per_image_phase_oracle_2, logits_per_text_phase_oracle_2 = model(image, ground_truth_text)
+                    total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch)) / 2.0
+                    total_loss.backward()
+
+                
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
-                self.update_model_ttl(model, optimizer, count=image.shape[0], spu_ttl=self.args.spu_ttl)
+                self.update_model_ttl(model, optimizer)
                 optimizer.zero_grad()
 
                 # Updating the Teacher via EMA
-                with torch.no_grad():  
+                with torch.no_grad():
                     m = momentum_schedule[iiter]
-                    if self.args.method=="SPU":
-                        if self.args.spu_ttl:
-                            k = self.args.k_ttl
+                    if self.args.batchwise_spu_ttl:
+                        k = self.args.k_ttl
+                        if self.args.batchwise_spu_ttl:
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 # print(name_k, name_q, "------------------------")
-                                mult_matrix_teacher = (k-m)*(self.mask_ttl[name_k]) + m
-                                mult_matrix_student = (m-k)*(self.mask_ttl[name_k]) + (1-m) 
-                                # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
-                                # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
-                                param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
-                        else:
-                            k = self.args.k
-                            for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
-                                # print(name_k, name_q, "------------------------")  
-                                mult_matrix_teacher = (k-m)*(self.mask[name_k]) + m
-                                mult_matrix_student = (m-k)*(self.mask[name_k]) + (1-m) 
+                                mult_matrix_teacher = (k - m) * (self.mask_ttl[name_k]) + m
+                                mult_matrix_student = (m - k) * (self.mask_ttl[name_k]) + (1 - m)
                                 # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
                                 # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
                                 param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
@@ -577,7 +674,7 @@ class FinetuneCLIP(object):
                             param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss per batch {loss.val:.4f} ({loss.avg: .4f}) \t')
-                if self.args.sanity:
+                if self.args.sanity and iiter>3:
                     break
         model.eval()
 

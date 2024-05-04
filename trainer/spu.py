@@ -125,7 +125,6 @@ class MASEDIT(FinetuneCLIP):
             for name, param in model.named_parameters():
                 gradients = param.grad
                 if gradients is not None:
-                    # print("grad in update 2 22222 --------------")
                     param.grad = self.mask[name] * param.grad
                     # Update only the 1% most activated entries
                     # param.data -= optimizer.param_groups[0]['lr'] * param.grad

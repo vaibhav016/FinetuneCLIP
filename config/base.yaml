@@ -17,7 +17,7 @@ tta_loss_mode: "teacher_student"
 ema: True
 oracle: False
 schedule: 0.9999
-tta_schedule: 0.8
+tta_schedule: 0.9999
 rd_loss: False
 
 # base model and optimizer
@@ -34,13 +34,18 @@ evaluation: False
 sanity: False
 
 #SPU config
+k: 0.9
+k_ttl: 0.9
 scale: 1
 update_all: True
 select_loss_type: cn
 cur_importance_batch_percentage: 1
 sparsity: 0.5
 score: norm
-spu_ttl: True
+batchwise_spu_ttl: True
+cosine_threshold: 0.1
+use_2_mom_supervised: False 
+use_2_mom_ttl: False
 
 
 # method
