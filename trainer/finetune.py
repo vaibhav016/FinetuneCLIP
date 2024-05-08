@@ -138,8 +138,8 @@ class FinetuneCLIP(object):
             total_loss+=rd_loss
         return total_loss
 
-    def update_model_ttl(self, model, optimizer):
-        if self.args.batchwise_spu_ttl:    
+    def update_model_ttl(self, model, optimizer):        
+        if self.args.batchwise_spu_ttl:   
             #  print("********** SPU TTL Optim*************")
             with torch.no_grad():
                 for name, param in model.named_parameters():
@@ -147,6 +147,16 @@ class FinetuneCLIP(object):
                     if gradients is not None:
                         # print(self.mask_ttl.keys())
                         param.grad = self.mask_ttl[name] * param.grad
+                        # Update only the 1% most activated entries
+                        # param.data -= optimizer.param_groups[0]['lr'] * param.grad
+        elif self.args.use_sup_mask_in_ttl:    
+            #  print("********** SPU TTL Optim*************")
+            with torch.no_grad():
+                for name, param in model.named_parameters():
+                    gradients = param.grad
+                    if gradients is not None:
+                        # print(self.mask_ttl.keys())
+                        param.grad = self.mask[name] * param.grad
                         # Update only the 1% most activated entries
                         # param.data -= optimizer.param_groups[0]['lr'] * param.grad
 
@@ -551,7 +561,7 @@ class FinetuneCLIP(object):
         for name, param in model.named_parameters():
             if param.requires_grad:
                 if param.grad is not None:
-                    importance[name].data += param.grad.clone().detach()
+                    importance[name].data += param.grad.clone()
 
         return importance, loss
 
@@ -592,6 +602,7 @@ class FinetuneCLIP(object):
         loss = AverageMeter()
         class_names = dataset.class_name_full
         momentum_schedule = self.cosine_scheduler(self.args.tta_schedule, 1, self.args.tta_epochs, len(tta_dataloader))
+        
 
         for e in range(self.args.tta_epochs):
             for iiter, (image, label, ground_truth_text) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e + 1} epoch", total=len(tta_dataloader)):
@@ -631,7 +642,7 @@ class FinetuneCLIP(object):
                 predicted_text = predicted_text.to(device)
 
                 if self.args.batchwise_spu_ttl:
-                    cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type)
+                    cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type_ttl)
                     if iiter == 0:
                         print("-----computing 1st time-----")
                         self.compute_masks_ttl_batch(model, cur_importance)
@@ -640,7 +651,7 @@ class FinetuneCLIP(object):
                                 self.prev_avg_grad[name] = param.grad.clone().detach()
                       ############################################################
                     else:
-                        if not self.check_similarity_gradients(model):
+                        if not self.check_similarity_gradients(model) or self.args.compute_ttl_masks_every_batch:
                             #### compute importance wrt to this batch ######
                             print("-------------------orthogonal gradients so compute mask ------------------")
                             self.compute_masks_ttl_batch(model, cur_importance)
@@ -661,17 +672,27 @@ class FinetuneCLIP(object):
                     m = momentum_schedule[iiter]
                     if self.args.batchwise_spu_ttl:
                         k = self.args.k_ttl
-                        if self.args.batchwise_spu_ttl:
+                        for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                            # print(name_k, name_q, "------------------------")
+                            mult_matrix_teacher = (k - m) * (self.mask_ttl[name_k]) + m
+                            mult_matrix_student = (m - k) * (self.mask_ttl[name_k]) + (1 - m)
+                            # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
+                            # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
+                            param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
+                    else:
+                        if self.args.use_sup_mask_in_ttl:
+                            k = self.args.k_ttl
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 # print(name_k, name_q, "------------------------")
-                                mult_matrix_teacher = (k - m) * (self.mask_ttl[name_k]) + m
-                                mult_matrix_student = (m - k) * (self.mask_ttl[name_k]) + (1 - m)
+                                mult_matrix_teacher = (k - m) * (self.mask[name_k]) + m
+                                mult_matrix_student = (m - k) * (self.mask[name_k]) + (1 - m)
                                 # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
                                 # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
                                 param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
-                    else:
-                        for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
-                            param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+
+                        else:
+                            for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                                param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
                 if iiter % self.args.print_frequency == 0:
                     print(f'TTA Loss per batch {loss.val:.4f} ({loss.avg: .4f}) \t')
                 if self.args.sanity and iiter>3:
