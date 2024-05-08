@@ -65,7 +65,6 @@ class FinetuneCLIP(object):
         self.unseen_metric_teacher = METRIC(args)
         self.full_metric_teacher = METRIC(args)
         self.zero_shot_metric_teacher = AverageMeter()
-        self.mask_ttl = {}
         self.prev_avg_grad = {}
 
     def only_evaluation(self, model, dataset, task, acc_matrix=None):
@@ -138,7 +137,7 @@ class FinetuneCLIP(object):
             total_loss+=rd_loss
         return total_loss
 
-    def update_model_ttl(self, model, optimizer):        
+    def update_model_ttl(self, model, optimizer, task):        
         if self.args.batchwise_spu_ttl:   
             #  print("********** SPU TTL Optim*************")
             with torch.no_grad():
@@ -146,7 +145,7 @@ class FinetuneCLIP(object):
                     gradients = param.grad
                     if gradients is not None:
                         # print(self.mask_ttl.keys())
-                        param.grad = self.mask_ttl[name] * param.grad
+                        param.grad = self.ttl_mask_per_task[task][name] * param.grad
                         # Update only the 1% most activated entries
                         # param.data -= optimizer.param_groups[0]['lr'] * param.grad
         elif self.args.use_sup_mask_in_ttl:    
@@ -156,7 +155,7 @@ class FinetuneCLIP(object):
                     gradients = param.grad
                     if gradients is not None:
                         # print(self.mask_ttl.keys())
-                        param.grad = self.mask[name] * param.grad
+                        param.grad = self.mask_per_task[task][name] * param.grad
                         # Update only the 1% most activated entries
                         # param.data -= optimizer.param_groups[0]['lr'] * param.grad
 
@@ -219,7 +218,7 @@ class FinetuneCLIP(object):
                 total_loss = self.compute_loss(batch, teacher_model, model, task, buffer=batch_b, epoch=epoch)
                 total_loss.backward()
 
-                self.update_model(model, optimizer, count=batch_size, epoch=epoch, task=task)
+                self.update_model(model, optimizer, task, count=batch_size, epoch=epoch)
 
                 optimizer.zero_grad()
 
@@ -238,8 +237,8 @@ class FinetuneCLIP(object):
                             k = self.args.k
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 # print(name_k, name_q, "------------------------")  
-                                mult_matrix_teacher = (k-m)*(self.mask[name_k]) + m
-                                mult_matrix_student = (m-k)*(self.mask[name_k]) + (1-m)
+                                mult_matrix_teacher = (k-m)*(self.mask_per_task[task][name_k]) + m
+                                mult_matrix_student = (m-k)*(self.mask_per_task[task][name_k]) + (1-m)
                                 # mult_matrix_teacher = (m-1.0)*(self.mask[name_k]) + 1.0
                                 # mult_matrix_student = (1.0-m)*(self.mask[name_k])
                                 param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
@@ -259,7 +258,7 @@ class FinetuneCLIP(object):
         print('Update Buffer....')
         dataset.update_buffer(task)
     
-    def update_model(self, model, optimizer, **kwargs):
+    def update_model(self, model, optimizer, task, **kwargs):
          optimizer.step()
 
     def eva_task_t(self, t, testset, model, task, text_features, text_features_full,  curr_acc_matrix=[]):
@@ -565,13 +564,13 @@ class FinetuneCLIP(object):
 
         return importance, loss
 
-    def compute_masks_ttl_batch(self, model, cur_importance):
+    def compute_masks_ttl_batch(self, model, cur_importance, task):
         ##### Originally here compute_importance_score_batch() was called ###########
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if name in self.trainable_params:
                     if any(param in name for param in ['bias']) or self.args.sparsity == 1.0:
-                        self.mask_ttl[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+                        self.ttl_mask_per_task[task][name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
                         continue
                     if name not in cur_importance.keys():
                         print(f' importance of `{name} is none')
@@ -589,8 +588,8 @@ class FinetuneCLIP(object):
                     k = int(magnitudes.numel() * self.args.sparsity)
 
                     topk_values, topk_indices = torch.topk(magnitudes.view(-1), k=k)
-                    self.mask_ttl[name] = torch.zeros_like(magnitudes).to(self.args.device)
-                    self.mask_ttl[name].view(-1)[topk_indices] = 1
+                    self.ttl_mask_per_task[task][name] = torch.zeros_like(magnitudes).to(self.args.device)
+                    self.ttl_mask_per_task[task][name].view(-1)[topk_indices] = 1
 
     def tta_with_merged_data(self, teacher_model, model, dataset, task):
         # self.unfreeze_model(model)
@@ -603,7 +602,6 @@ class FinetuneCLIP(object):
         class_names = dataset.class_name_full
         momentum_schedule = self.cosine_scheduler(self.args.tta_schedule, 1, self.args.tta_epochs, len(tta_dataloader))
         
-
         for e in range(self.args.tta_epochs):
             for iiter, (image, label, ground_truth_text) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e + 1} epoch", total=len(tta_dataloader)):
                 image = image.to(device)
@@ -654,7 +652,7 @@ class FinetuneCLIP(object):
                         if not self.check_similarity_gradients(model) or self.args.compute_ttl_masks_every_batch:
                             #### compute importance wrt to this batch ######
                             print("-------------------orthogonal gradients so compute mask ------------------")
-                            self.compute_masks_ttl_batch(model, cur_importance)
+                            self.compute_masks_ttl_batch(model, cur_importance, task)
                      #############################################################
                 else:  
                     logits_per_image_phase_2, logits_per_text_phase_2 = model(image, predicted_text)
@@ -664,7 +662,7 @@ class FinetuneCLIP(object):
 
                 
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
-                self.update_model_ttl(model, optimizer)
+                self.update_model_ttl(model, optimizer, task)
                 optimizer.zero_grad()
 
                 # Updating the Teacher via EMA
@@ -673,23 +671,16 @@ class FinetuneCLIP(object):
                     if self.args.batchwise_spu_ttl:
                         k = self.args.k_ttl
                         for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
-                            # print(name_k, name_q, "------------------------")
-                            mult_matrix_teacher = (k - m) * (self.mask_ttl[name_k]) + m
-                            mult_matrix_student = (m - k) * (self.mask_ttl[name_k]) + (1 - m)
-                            # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
-                            # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
+                            mult_matrix_teacher = (k - m) * (self.self.ttl_mask_per_task[task][name_k]) + m
+                            mult_matrix_student = (m - k) * (self.self.ttl_mask_per_task[task][name_k]) + (1 - m)
                             param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                     else:
                         if self.args.use_sup_mask_in_ttl:
                             k = self.args.k_ttl
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
-                                # print(name_k, name_q, "------------------------")
-                                mult_matrix_teacher = (k - m) * (self.mask[name_k]) + m
-                                mult_matrix_student = (m - k) * (self.mask[name_k]) + (1 - m)
-                                # mult_matrix_teacher = (m-1.0)*(self.mask_ttl[name_k]) + 1.0
-                                # mult_matrix_student = (1.0-m)*(self.mask_ttl[name_k])
+                                mult_matrix_teacher = (k - m) * (self.mask_per_task[name_k]) + m
+                                mult_matrix_student = (m - k) * (self.mask_per_task[name_k]) + (1 - m)
                                 param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
-
                         else:
                             for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
                                 param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)

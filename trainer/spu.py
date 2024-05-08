@@ -43,11 +43,14 @@ class MASEDIT(FinetuneCLIP):
         super().__init__(args)
         self.magnitudes = {}
         self.mask = {}
+        self.ttl_mask = {}
         self.alpha = 0.5
         self._lambda = self.args.scale
         self.importance_computed = False
-        self.ttl_mask ={}
         self.trainable_params = []
+        self.mask_per_task = {i:{} for i in range(self.num_tasks)}
+        self.ttl_mask_per_task = {i:{} for i in range(self.num_tasks)}
+
 
     def setup_importance(self, model):
         # Parameters before the first task starts
@@ -91,7 +94,9 @@ class MASEDIT(FinetuneCLIP):
             for name, param in model.named_parameters():
                 if name in self.trainable_params:
                     if any(param in name for param in ['bias']) or self.args.sparsity == 1.0:
-                        self.mask[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+                        # self.mask[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+                        self.mask_per_task[task][name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+
                         continue
                     if name not in cur_importance.keys():
                         print(f' importance of `{name} is none')
@@ -113,11 +118,13 @@ class MASEDIT(FinetuneCLIP):
                     topk_values, topk_indices = torch.topk(magnitudes.view(-1), k=k)
                     # print("topkvaluse-------", topk_values.shape, topk_indices)
                     
-                    self.mask[name] = torch.zeros_like(magnitudes).to(self.args.device)
+                    # self.mask[name] = torch.zeros_like(magnitudes).to(self.args.device)
+                    self.mask_per_task[task][name] = torch.zeros_like(magnitudes).to(self.args.device)
                     # print("mask--------------", self.mask[name].shape)
-                    self.mask[name].view(-1)[topk_indices] = 1
-
-    def update_model(self, model, optimizer, **kwargs):
+                    # self.mask[name].view(-1)[topk_indices] = 1
+                    self.mask_per_task[task][name].view(-1)[topk_indices] = 1
+                    
+    def update_model(self, model, optimizer, task, **kwargs):
         # print("----------- spu update --------------")
         count = kwargs.get('count', 0)
         epoch = kwargs.get('epoch', 0)
@@ -125,7 +132,7 @@ class MASEDIT(FinetuneCLIP):
             for name, param in model.named_parameters():
                 gradients = param.grad
                 if gradients is not None:
-                    param.grad = self.mask[name] * param.grad
+                    param.grad =  self.mask_per_task[task][name] * param.grad
                     # Update only the 1% most activated entries
                     # param.data -= optimizer.param_groups[0]['lr'] * param.grad
         optimizer.step()
