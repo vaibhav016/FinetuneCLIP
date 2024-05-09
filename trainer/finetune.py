@@ -643,7 +643,7 @@ class FinetuneCLIP(object):
                     cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type_ttl)
                     if iiter == 0:
                         print("-----computing 1st time-----")
-                        self.compute_masks_ttl_batch(model, cur_importance)
+                        self.compute_masks_ttl_batch(model, cur_importance, task)
                         with torch.no_grad():
                             for name, param in model.named_parameters():
                                 self.prev_avg_grad[name] = param.grad.clone().detach()
@@ -671,15 +671,15 @@ class FinetuneCLIP(object):
                     if self.args.batchwise_spu_ttl:
                         k = self.args.k_ttl
                         for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
-                            mult_matrix_teacher = (k - m) * (self.self.ttl_mask_per_task[task][name_k]) + m
-                            mult_matrix_student = (m - k) * (self.self.ttl_mask_per_task[task][name_k]) + (1 - m)
+                            mult_matrix_teacher = (k - m) * (self.ttl_mask_per_task[task][name_k]) + m
+                            mult_matrix_student = (m - k) * (self.ttl_mask_per_task[task][name_k]) + (1 - m)
                             param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                     else:
                         if self.args.use_sup_mask_in_ttl:
                             k = self.args.k_ttl
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
-                                mult_matrix_teacher = (k - m) * (self.mask_per_task[name_k]) + m
-                                mult_matrix_student = (m - k) * (self.mask_per_task[name_k]) + (1 - m)
+                                mult_matrix_teacher = (k - m) * (self.mask_per_task[task][name_k]) + m
+                                mult_matrix_student = (m - k) * (self.mask_per_task[task][name_k]) + (1 - m)
                                 param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                         else:
                             for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):

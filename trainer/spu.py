@@ -48,8 +48,8 @@ class MASEDIT(FinetuneCLIP):
         self._lambda = self.args.scale
         self.importance_computed = False
         self.trainable_params = []
-        self.mask_per_task = {i:{} for i in range(self.num_tasks)}
-        self.ttl_mask_per_task = {i:{} for i in range(self.num_tasks)}
+        self.mask_per_task = {i:{} for i in range(self.args.num_tasks)}
+        self.ttl_mask_per_task = {i:{} for i in range(self.args.num_tasks)}
 
 
     def setup_importance(self, model):
