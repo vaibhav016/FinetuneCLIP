@@ -66,6 +66,17 @@ class FinetuneCLIP(object):
         self.full_metric_teacher = METRIC(args)
         self.zero_shot_metric_teacher = AverageMeter()
         self.prev_avg_grad = {}
+    
+    def union_supervised_masks(self, model, task):
+        union_mask = self.mask_per_task[0]
+        for i in range(1, task):
+            with torch.no_grad:
+                for name, param in model.named_parameters():
+                    if name in self.trainable_params:
+                        union_mask[name] = torch.logical_or(union_mask[name], self.mask_per_task[i][name])
+                        print("sparsity of masks after union ------", len(torch.nonzero(union_mask[name] == 1))/union_mask[name].numel())
+        self.union_mask[task] = union_mask
+
 
     def only_evaluation(self, model, dataset, task, acc_matrix=None):
         model, _, _, _ = resume(self.args, task, model)
@@ -664,6 +675,7 @@ class FinetuneCLIP(object):
                 loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
                 self.update_model_ttl(model, optimizer, task)
                 optimizer.zero_grad()
+                
 
                 # Updating the Teacher via EMA
                 with torch.no_grad():

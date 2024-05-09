@@ -48,6 +48,7 @@ use_2_mom_supervised: True
 use_sup_mask_in_ttl: True
 compute_ttl_masks_every_batch: True
 select_loss_type_ttl: cn
+supervised_union_masks_per_task: False
 
 
 # method

@@ -285,6 +285,8 @@ def main(args):
         if args.method == "SPU":
             Trainer.unfreeze_model(model)
             Trainer.compute_importance(dataset, model, task)
+            if args.supervised_union_masks_per_task:
+                Trainer.union_supervised_masks(model, task)
         Trainer.train(teacher_model, model, dataset, task)
         # Trainer.unfreeze_model(model)
         if not args.ema and task>0:
@@ -303,7 +305,7 @@ def main(args):
 
         Trainer.save_checkpoint(model, task, args)
 
-        if task==2 and args.sanity:
+        if task==3 and args.sanity:
             args.num_tasks=3
             break
     
