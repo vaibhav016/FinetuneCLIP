@@ -133,7 +133,10 @@ class MASEDIT(FinetuneCLIP):
             for name, param in model.named_parameters():
                 gradients = param.grad
                 if gradients is not None:
-                    param.grad =  self.mask_per_task[task][name] * param.grad
+                    if self.args.supervised_union_masks_per_task:
+                        param.grad =  self.mask_per_task_union[task][name] * param.grad
+                    else:
+                        param.grad =  self.mask_per_task[task][name] * param.grad
                     # Update only the 1% most activated entries
                     # param.data -= optimizer.param_groups[0]['lr'] * param.grad
         optimizer.step()

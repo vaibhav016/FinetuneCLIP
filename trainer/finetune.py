@@ -70,13 +70,23 @@ class FinetuneCLIP(object):
     def union_supervised_masks(self, model, task):
         union_mask = self.mask_per_task[0]
         for i in range(1, task):
-            with torch.no_grad:
+            with torch.no_grad():
                 for name, param in model.named_parameters():
                     if name in self.trainable_params:
                         union_mask[name] = torch.logical_or(union_mask[name], self.mask_per_task[i][name])
-                        print("sparsity of masks after union ------", len(torch.nonzero(union_mask[name] == 1))/union_mask[name].numel())
-        self.union_mask[task] = union_mask
-
+                        indices = torch.nonzero(union_mask[name] == 1)
+                        if len(union_mask[name].shape)<1:
+                            continue
+                        # print(indices.shape, union_mask[name].shape)
+                        num_elements_to_keep = int(len(indices)*self.args.sparsity)
+                        shuffled_indices = torch.randperm(len(indices))
+                        indices_to_one = indices[shuffled_indices[:num_elements_to_keep]]
+                        if len(union_mask[name].shape)==2:
+                            union_mask[name][indices_to_one[:, 0], indices_to_one[:, 1]] = 1
+                        else:
+                            union_mask[name][indices_to_one] = 1
+                        # print("sparsity of masks after union ------", len(torch.nonzero(union_mask[name] == 1))/union_mask[name].numel())
+        self.mask_per_task_union[task] = union_mask
 
     def only_evaluation(self, model, dataset, task, acc_matrix=None):
         model, _, _, _ = resume(self.args, task, model)
@@ -106,7 +116,7 @@ class FinetuneCLIP(object):
         else:
             trainset = dataset.get_dataset(task, is_train=True, with_buffer=(self.args.buffer_size > 0))
             bufferset = None
-        print(trainset)
+        # print(trainset)
         if bufferset:
             buffer_loader = self.get_loader(bufferset)
         else:
@@ -148,27 +158,28 @@ class FinetuneCLIP(object):
             total_loss+=rd_loss
         return total_loss
 
-    def update_model_ttl(self, model, optimizer, task):        
-        if self.args.batchwise_spu_ttl:   
-            #  print("********** SPU TTL Optim*************")
-            with torch.no_grad():
-                for name, param in model.named_parameters():
-                    gradients = param.grad
-                    if gradients is not None:
-                        # print(self.mask_ttl.keys())
-                        param.grad = self.ttl_mask_per_task[task][name] * param.grad
-                        # Update only the 1% most activated entries
-                        # param.data -= optimizer.param_groups[0]['lr'] * param.grad
-        elif self.args.use_sup_mask_in_ttl:    
-            #  print("********** SPU TTL Optim*************")
-            with torch.no_grad():
-                for name, param in model.named_parameters():
-                    gradients = param.grad
-                    if gradients is not None:
-                        # print(self.mask_ttl.keys())
-                        param.grad = self.mask_per_task[task][name] * param.grad
-                        # Update only the 1% most activated entries
-                        # param.data -= optimizer.param_groups[0]['lr'] * param.grad
+    def update_model_ttl(self, model, optimizer, task):    
+        if self.args.method=="SPU":     
+            if self.args.batchwise_spu_ttl:   
+                #  print("********** SPU TTL Optim*************")
+                with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        gradients = param.grad
+                        if gradients is not None:
+                            # print(self.mask_ttl.keys())
+                            param.grad = self.ttl_mask_per_task[task][name] * param.grad
+                            # Update only the 1% most activated entries
+                            # param.data -= optimizer.param_groups[0]['lr'] * param.grad
+            elif self.args.use_sup_mask_in_ttl:    
+                #  print("********** SPU TTL Optim*************")
+                with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        gradients = param.grad
+                        if gradients is not None:
+                            # print(self.mask_ttl.keys())
+                            param.grad = self.mask_per_task[task][name] * param.grad
+                            # Update only the 1% most activated entries
+                            # param.data -= optimizer.param_groups[0]['lr'] * param.grad
 
         optimizer.step()
 
