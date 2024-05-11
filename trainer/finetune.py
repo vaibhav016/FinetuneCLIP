@@ -50,7 +50,7 @@ class FinetuneCLIP(object):
     def __init__(self, args):
         self.args = args
         self.num_classes = args.num_classes
-        if args.scenario == 'class_incremental':
+        if args.scenario in ['class_incremental', 'dataset_incremental']:
             METRIC = ClassIncrementalMetric
         elif args.scenario in ['domain_incremental', 'task_incremental']:
             METRIC = TaskIncrementalMetric
@@ -369,6 +369,8 @@ class FinetuneCLIP(object):
         return acc / n
 
     def evaluation(self, model, dataset, task, log=True, acc_matrix=None, use_teacher_model=False):
+        if self.args.dataset=="long_seq":
+            dataset.class_name_full = dataset.class_names_list[task]
         if use_teacher_model:
             unseen_metric = self.unseen_metric_teacher
             avg_metric = self.metric_teacher
@@ -376,6 +378,7 @@ class FinetuneCLIP(object):
             unseen_metric = self.unseen_metric
             avg_metric = self.metric
         curr_acc_matrix = []
+        
         if self.args.scenario == 'class_incremental':
             if hasattr(dataset, 'classifier'):
                 text_features_full = dataset.classifier(dataset.class_name_full, model)
@@ -391,10 +394,11 @@ class FinetuneCLIP(object):
                 text_features[unseen_class_idx] = 0
             else:
                 text_features = text_features_full.clone().detach()
+        
         for t in range(self.args.num_tasks):
             testset = dataset.get_dataset(t, is_train=False)
             if self.args.scenario != 'class_incremental':
-                class_name = dataset.get_class_name(t)
+                class_name = dataset.class_names_list[t]
                 text_inputs_full = torch.cat([tokenize(f"a photo of a {c}") for c in class_name]).cuda()
                 with torch.no_grad():
                     text_features_full = model.encode_text(text_inputs_full)

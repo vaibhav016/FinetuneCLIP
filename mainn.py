@@ -21,6 +21,8 @@ from dataset.cifar100 import SplitCifar100
 from dataset.cub import CUB
 from dataset.cub_vaibhav import CUBV
 from dataset.gtsrb import SplitGTSRB
+from dataset.long_seq import LongSequence
+
 from trainer import METHOD
 import json
 from clip.clip import tokenize
@@ -262,6 +264,8 @@ def main(args):
         dataset = SplitBirdsnap(args, transform=transform)
     elif args.dataset == 'gtsrb':
         dataset = SplitGTSRB(args, transform=transform)
+    elif args.dataset == 'long_seq':
+        dataset = LongSequence(args, transform=transform)
     else:
         raise ValueError
 
