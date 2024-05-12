@@ -496,10 +496,43 @@ class FinetuneCLIP(object):
                     text_features_full = model.encode_text(text_inputs_full)
                     text_features_full /= text_features_full.norm(dim=1, keepdim=True)
             return text_features_full
+        if self.args.scenario == 'dataset_incremental':
+            if hasattr(dataset, 'classifier'):
+                class_name = []
+                for i in range(dataset.num_tasks):
+                    class_name = dataset.class_names_list[i]
+                    if i == 0:
+                        text_features_full = torch.cat([tokenize(f"a photo of a {c}") for c in class_name]).cuda()
+                    else:
+                        temp = torch.cat([tokenize(f"a photo of a {c}") for c in class_name]).cuda()
+                        text_features_full.cat((text_features_full, temp), axis=0)
+                
+                with torch.no_grad():
+                    text_features_full = model.encode_text(text_inputs_full)
+                    text_features_full /= text_features_full.norm(dim=1, keepdim=True)
+            return text_features_full
+        else:
+            raise ValueError 
+
 
     def mask_unseen_classes(self, text_features_full, task, dataset):
         if task < dataset.num_tasks - 1:
-            unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes[task + 1:], axis=None)).to(torch.long)
+            if self.args.dataset == "long_seq":
+                mask_indices_end = 0
+                mask_indices_start = 0
+                for i in range(dataset.num_tasks):
+                    print(len(dataset.class_names_list[i]))
+                    if i <=task:
+                        mask_indices_start+= len(dataset.class_names_list[i])
+                        mask_indices_end = mask_indices_start
+                    else:
+                        mask_indices_end+=len(dataset.class_names_list[i])
+                unseen_class_idx = torch.arange(mask_indices_start, mask_indices_end, dtype=torch.long)
+                print(unseen_class_idx)
+                print(text_features_full.shape)
+                print(1/0)
+            else:
+                unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes[task + 1:], axis=None)).to(torch.long)
             text_features = text_features_full.clone().detach()
             text_features[unseen_class_idx] = 0
         else:

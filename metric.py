@@ -28,7 +28,7 @@ class ClassIncrementalMetric(object):
     def __init__(self, args):
         self.task = args.num_tasks
         self.scenario = args.scenario
-        assert (self.scenario in ['class_incremental', 'data_incremental'])
+        assert (self.scenario in ['class_incremental', 'dataset_incremental'])
         self.reset()
         self.set_task()
 

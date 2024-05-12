@@ -5,9 +5,13 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from torchvision.datasets import CIFAR100, FGVCAircraft
-
+from PIL import Image
 from dataset.aircraft_name import classes as class_names_aircraft
-
+from dataset.cars_name import classes as car_names
+import pandas as pd
+import csv
+import os
+import glob
 
 from tqdm import tqdm
 
@@ -35,6 +39,67 @@ def zeroshot_classifier(classnames, model):
         zeroshot_weights = torch.stack(zeroshot_weights, dim=1).to(device)
     return zeroshot_weights.T
 
+def store_paths_with_labels(csv_file, files_list):
+
+    file_dict = {}
+    for path in files_list:
+        filename = path.split("/")[-1]
+        file_dict[str(filename)] = path
+
+    df = pd.read_csv(csv_file)
+    paths_with_labels = []
+    for i, j in tqdm(df.iterrows()):
+        paths_with_labels.append((file_dict[j["filename"]], j["Labels"] - 1))
+
+    return paths_with_labels
+
+def add_header(input_file, output_file):
+    # Define the header row as a list
+    header = ["filename", "bb1", "bb2", "bb3", "bb4", "Labels"]
+    # Replace with your desired column names
+
+    # Specify the input CSV file and output CSV file
+
+    # Read the original CSV file and store its content in a list
+    data = []
+    with open(input_file, "r", newline="") as csvfile:
+        reader = csv.reader(csvfile)
+        for row in reader:
+            data.append(row)
+
+    # Add the header row at the beginning of the data list
+    data.insert(0, header)
+
+    # Write the updated data back to the CSV file
+    with open(output_file, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerows(data)
+
+def download_transform_data(data_directory):
+    if os.path.isdir(os.path.join(data_directory, "cars")):
+        print("Cars data downloaded")
+    else:
+        print("Download data from https://www.kaggle.com/datasets/jutrera/stanford-car-dataset-by-classes-folder")  # TODO implement data downloading
+    data_directory = os.path.join(data_directory, "cars")
+    images_dir = os.path.join(data_directory, "car_data/car_data/")
+    train_images = glob.glob(images_dir + "train/*/*.jpg")
+    test_images = glob.glob(images_dir + "test/*/*.jpg")
+
+    training_csv_path = os.path.join(data_directory, "anno_train.csv")
+    test_csv_path = os.path.join(data_directory, "anno_test.csv")
+
+    training_csv_path_out = os.path.join(data_directory, "anno_train_header.csv")
+    test_csv_path_out = os.path.join(data_directory, "anno_test_header.csv")
+
+    add_header(training_csv_path, training_csv_path_out)
+    add_header(test_csv_path, test_csv_path_out)
+
+    training_paths = store_paths_with_labels(training_csv_path_out, train_images)
+    test_paths = store_paths_with_labels(test_csv_path_out, test_images)
+
+    return training_paths, test_paths
+
+
 class CLIPDataset(Dataset):
     _repr_indent = 4
 
@@ -42,6 +107,8 @@ class CLIPDataset(Dataset):
         self.data = set
         self.text = text
         self.idx = idx
+        # print(len(self.data.targets))
+        # print(len(idx))
         self.classes = np.array([self.data.targets[i] for i in idx])
 
     def __len__(self):
@@ -67,21 +134,44 @@ class CLIPDataset(Dataset):
 
         return image, label, text
 
+class Cars(Dataset):
+    def __init__(self, path_dict_with_labels, transforms=None):
+        # transforms: none  # Can be 1) autoaugment, 2) augmix, 3) randaugment, 4) trivialaugment, 5) manual, 6) none
+        self.image_paths_dict_with_labels = path_dict_with_labels
+        self.transform = transforms
+
+    def __len__(self):
+        return len(self.image_paths_dict_with_labels)
+
+    def __getitem__(self, idx):
+        data = self.image_paths_dict_with_labels[idx]
+        # print(data)
+        image = Image.open(data[0])
+        # if image.mode != "RGB":
+        #     # Convert grayscale to RGB by duplicating the single channel
+        #     image = image.convert("RGB")
+        image = self.transform(image) if self.transform is not None else image
+        labels = data[1]
+
+        return image, labels
+
 class LongSequence():
     def __init__(self, args, transform=None):
         self.training_tasks = []
         self.tta_tasks = []
         self.testset_tasks = []
         self.class_names_list = []
+        self.num_classes = []
         self.buffer = {}
         self.paths = {}
         self.args = args
         self.scenario = "dataset_incremental"
         self.buffer_size = int(args.buffer_size)
     
-        self.add_cifar_data(transform)    ########## CIFAR100##############
+        self.add_cars_data(transform)    ########## CIFAR100##############
         self.add_aircraft_data(transform) ########## Aircraft #############
-        
+        self.add_cifar_data(transform)
+
         self.dataset_collect_fcn = CLIPDataset
         self.classifier = zeroshot_classifier
         self.num_tasks = len(self.training_tasks)
@@ -107,6 +197,7 @@ class LongSequence():
         self.testset_tasks.append(self.testset_aircraft)
         
         self.class_names_list.append(classnames_aircraft)
+        print("---------------- added aircraft data --------------")
 
     def add_cifar_data(self, transform):
         self.trainset_cifar100 = CIFAR100(
@@ -126,27 +217,34 @@ class LongSequence():
         self.training_tasks.append(self.trainset_cifar100)
         self.tta_tasks.append(self.ttaset)
         self.testset_tasks.append(self.testset)
-    
-    # def add_cars_data(self, transform):
-    #     #################### CARS #########################
-    #     training_paths, test_paths = download_transform_data(args.data)
-    #     random.shuffle(test_paths)
-    #     test_files_halved = int(len(test_paths) / 2)
 
-    #     # Halve the test data. One half will go for testing, and other half will go for tta
-    #     tta_paths = test_paths[:test_files_halved]
-    #     test_eval_paths = test_paths[test_files_halved:]
+        print("---------------- added cifar100 data --------------")
 
-    #     # context_feat = Features({'text': Value(dtype='string', id=None)})
-    #     self.trainset = Cars(training_paths)
-    #     self.testset = Cars(test_eval_paths)
-    #     self.ttaset = Cars(tta_paths)
+    def add_cars_data(self, transform):
+        #################### CARS #########################
+        training_paths, test_paths = download_transform_data(self.args.data)
+        random.shuffle(test_paths)
+        test_files_halved = int(len(test_paths) / 2)
 
-    #     self.trainset.targets = [i[1] for i in self.trainset]
-    #     self.ttaset.targets = [i[1] for i in self.ttaset]
-    #     self.testset.targets = [i[1] for i in self.testset]
+        # Halve the test data. One half will go for testing, and other half will go for tta
+        tta_paths = test_paths[:test_files_halved]
+        test_eval_paths = test_paths[test_files_halved:]
+
+        # context_feat = Features({'text': Value(dtype='string', id=None)})
+        self.trainset = Cars(training_paths, transform)
+        self.testset = Cars(test_eval_paths, transform)
+        self.ttaset = Cars(tta_paths, transform)
+
+        self.trainset.targets = [i[1] for i in self.trainset]
+        self.ttaset.targets = [i[1] for i in self.ttaset]
+        self.testset.targets = [i[1] for i in self.testset]
+
+        self.class_names_list.append(car_names)
+        self.training_tasks.append(self.trainset)
+        self.tta_tasks.append(self.ttaset)
+        self.testset_tasks.append(self.testset)
+        print("---------------- added cars data --------------")
         
-
     def get_dataset(self, task_id, is_train=True, with_buffer=True, balanced=False, is_tta=False):
         if is_train:
             self.mode = 'train'
@@ -159,17 +257,17 @@ class LongSequence():
                 self.mode = 'test'
                 self.set = self.testset_tasks[task_id]
 
-        self._get_image_list_for_cur_set(with_buffer=with_buffer)
+        self._get_image_list_for_cur_set(task_id, with_buffer=with_buffer)
         idx = copy.deepcopy(self.data_idx)
         curset = self.dataset_collect_fcn(
             self.set, self.class_names_list[task_id], idx, transform=self.transform)
 
         return curset
     
-    def _get_image_list_for_cur_set(self, with_buffer=True):
-        if f'{self.task}_{self.mode}' in self.paths.keys():
+    def _get_image_list_for_cur_set(self, task, with_buffer=True):
+        if f'{task}_{self.mode}' in self.paths.keys():
             # if we have already read paths and labels from fils
-            self.data_idx = self.paths[f'{self.task}_{self.mode}']['data_idx']
+            self.data_idx = self.paths[f'{task}_{self.mode}']['data_idx']
         else:
             targets = self.set.targets
             # prepare data idx for current set
@@ -178,8 +276,8 @@ class LongSequence():
                     self.data_idx.append(idx)
 
             # and save to self.path
-            self.paths[f'{self.task}_{self.mode}'] = {}
-            self.paths[f'{self.task}_{self.mode}']['data_idx'] = self.data_idx
+            self.paths[f'{task}_{self.mode}'] = {}
+            self.paths[f'{task}_{self.mode}']['data_idx'] = self.data_idx
 
         if (self.buffer is not {}) and (self.mode == 'train') and (with_buffer):
             for key in self.buffer.keys():
@@ -192,7 +290,7 @@ class LongSequence():
         for key in range(task):
             self.data_idx.extend(self.buffer[key]['data_idx'])
         idx = copy.deepcopy(self.data_idx)
-        return self.dataset_collect_fcn(self.set, self.class_names_list[task], idx, transform=self.transform, n=self.shot)
+        return self.dataset_collect_fcn(self.set, self.class_names_list[task], idx, transform=self.transform)
     
     def update_buffer(self, task):
         '''
