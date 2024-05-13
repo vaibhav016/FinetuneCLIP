@@ -496,17 +496,17 @@ class FinetuneCLIP(object):
                     text_features_full = model.encode_text(text_inputs_full)
                     text_features_full /= text_features_full.norm(dim=1, keepdim=True)
             return text_features_full
-        if self.args.scenario == 'dataset_incremental':
+        
+        elif self.args.scenario == 'dataset_incremental':
             if hasattr(dataset, 'classifier'):
                 class_name = []
                 for i in range(dataset.num_tasks):
                     class_name = dataset.class_names_list[i]
                     if i == 0:
-                        text_features_full = torch.cat([tokenize(f"a photo of a {c}") for c in class_name]).cuda()
+                        text_inputs_full = torch.cat([tokenize(f"a photo of a {c}") for c in class_name]).cuda()
                     else:
                         temp = torch.cat([tokenize(f"a photo of a {c}") for c in class_name]).cuda()
-                        text_features_full.cat((text_features_full, temp), axis=0)
-                
+                        text_inputs_full = torch.cat((text_inputs_full, temp), dim=0)
                 with torch.no_grad():
                     text_features_full = model.encode_text(text_inputs_full)
                     text_features_full /= text_features_full.norm(dim=1, keepdim=True)
@@ -514,23 +514,18 @@ class FinetuneCLIP(object):
         else:
             raise ValueError 
 
-
     def mask_unseen_classes(self, text_features_full, task, dataset):
         if task < dataset.num_tasks - 1:
             if self.args.dataset == "long_seq":
                 mask_indices_end = 0
                 mask_indices_start = 0
                 for i in range(dataset.num_tasks):
-                    print(len(dataset.class_names_list[i]))
                     if i <=task:
                         mask_indices_start+= len(dataset.class_names_list[i])
                         mask_indices_end = mask_indices_start
                     else:
                         mask_indices_end+=len(dataset.class_names_list[i])
                 unseen_class_idx = torch.arange(mask_indices_start, mask_indices_end, dtype=torch.long)
-                print(unseen_class_idx)
-                print(text_features_full.shape)
-                print(1/0)
             else:
                 unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes[task + 1:], axis=None)).to(torch.long)
             text_features = text_features_full.clone().detach()
@@ -658,7 +653,7 @@ class FinetuneCLIP(object):
         loss_img = nn.CrossEntropyLoss()
         loss_txt = nn.CrossEntropyLoss()
         loss = AverageMeter()
-        class_names = dataset.class_name_full
+        class_names = dataset.class_name_full if self.args.dataset!="long_seq" else dataset.class_names_extended
         momentum_schedule = self.cosine_scheduler(self.args.tta_schedule, 1, self.args.tta_epochs, len(tta_dataloader))
         
         for e in range(self.args.tta_epochs):
@@ -693,12 +688,13 @@ class FinetuneCLIP(object):
                         predicted_class = torch.argmax(logits_per_image_predicted_phase_1, dim=1)
                     else:
                         raise Exception("TTA loss not implemented", self.args.tta_loss_mode)
-
+                
+                
                 predicted_class_names = [f'a photo of {class_names[i].replace("_", " ")}' for i in predicted_class]
                 predicted_text = tokenize(predicted_class_names)
                 predicted_text = predicted_text.to(device)
 
-                if self.args.batchwise_spu_ttl:
+                if self.args.batchwise_spu_ttl and self.args.method=="SPU":
                     cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type_ttl)
                     if iiter == 0:
                         print("-----computing 1st time-----")
@@ -728,14 +724,14 @@ class FinetuneCLIP(object):
                 # Updating the Teacher via EMA
                 with torch.no_grad():
                     m = momentum_schedule[iiter]
-                    if self.args.batchwise_spu_ttl:
+                    if self.args.batchwise_spu_ttl and self.args.method=="SPU":
                         k = self.args.k_ttl
                         for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                             mult_matrix_teacher = (k - m) * (self.ttl_mask_per_task[task][name_k]) + m
                             mult_matrix_student = (m - k) * (self.ttl_mask_per_task[task][name_k]) + (1 - m)
                             param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                     else:
-                        if self.args.use_sup_mask_in_ttl:
+                        if self.args.use_sup_mask_in_ttl and self.args.method=="SPU":
                             k = self.args.k_ttl
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 mult_matrix_teacher = (k - m) * (self.mask_per_task[task][name_k]) + m
