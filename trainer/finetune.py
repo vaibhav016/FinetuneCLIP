@@ -68,25 +68,33 @@ class FinetuneCLIP(object):
         self.prev_avg_grad = {}
     
     def union_supervised_masks(self, model, task):
-        union_mask = self.mask_per_task[0]
-        for i in range(1, task):
-            with torch.no_grad():
-                for name, param in model.named_parameters():
-                    if name in self.trainable_params:
-                        union_mask[name] = torch.logical_or(union_mask[name], self.mask_per_task[i][name])
-                        indices = torch.nonzero(union_mask[name] == 1)
-                        if len(union_mask[name].shape)<1:
-                            continue
-                        # print(indices.shape, union_mask[name].shape)
-                        num_elements_to_keep = int(len(indices)*self.args.sparsity)
-                        shuffled_indices = torch.randperm(len(indices))
-                        indices_to_one = indices[shuffled_indices[:num_elements_to_keep]]
-                        if len(union_mask[name].shape)==2:
-                            union_mask[name][indices_to_one[:, 0], indices_to_one[:, 1]] = 1
-                        else:
-                            union_mask[name][indices_to_one] = 1
-                        # print("sparsity of masks after union ------", len(torch.nonzero(union_mask[name] == 1))/union_mask[name].numel())
-        self.mask_per_task_union[task] = union_mask
+        if task == 0:
+            self.mask_per_task_union = self.mask_per_task[0]
+            return
+
+        union_mask_prev_tasks = self.mask_per_task_union
+        importance_score_current_task = self.importance_per_task[task]
+       
+        with torch.no_grad():
+            for name, param in tqdm(model.named_parameters()):
+                if name in self.trainable_params:
+                    if any(param in name for param in ['bias']) or self.args.sparsity == 1.0:
+                        # self.mask[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+                        continue # No need to sparsify this kind of parameters
+                    if name not in importance_score_current_task.keys() :
+                        print(f' importance of `{name} is none, in union masking fx ')
+                        continue
+                    
+                    masked_union = torch.logical_or(union_mask_prev_tasks[name], self.mask_per_task[task][name])
+                    masked_score =  importance_score_current_task[name] * masked_union
+                    
+                    k = int(importance_score_current_task[name].numel() * self.args.sparsity)
+
+                    topk_values, topk_indices = torch.topk(masked_score.view(-1), k=k)
+                    mask_union = torch.zeros_like(masked_union).to(self.args.device)
+                    mask_union.view(-1)[topk_indices] = 1
+                    
+                    self.mask_per_task_union[name] = mask_union
 
     def only_evaluation(self, model, dataset, task, acc_matrix=None):
         model, _, _, _ = resume(self.args, task, model)
@@ -317,6 +325,46 @@ class FinetuneCLIP(object):
         unseen_avg = zero_shot_metric.avg if not torch.is_tensor(zero_shot_metric.avg) else zero_shot_metric.avg.item()
 
         return avg, unseen_avg, len(testset)
+    
+    def eva_task_t_list(self, t, testset, model, task, text_features, text_features_full,  curr_acc_matrix=[], task_prev=True, d_idx=0, current_dataset=0):
+        zero_shot_metric = AverageMeter()
+        avg_metric = AverageMeter()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        test_dataloader = DataLoader(testset, batch_size=self.args.batch_size, num_workers=self.args.workers)
+        correct = 0.0
+        total_samples = 0.0
+        for (image, label, _) in tqdm(test_dataloader, desc=f"Evaluation for {t}", total=len(test_dataloader)):
+            image = image.to(device)
+            label = label.to(device)
+            if d_idx == 1 and current_dataset==1:
+                label += 100
+            with torch.no_grad():
+                image_features = model.encode_image(image)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            if t <= task or task_prev:  # update average accuracy for current batch
+                logits = 100.0 * image_features @ text_features.T
+                acc = accuracy(logits, label)[0]
+                avg_metric.update(acc, image.size(0))
+                _, pred = logits.topk(1, 1, True, True)
+                # print(pred.shape)
+                # print(label.shape)
+                correct += torch.sum(label == torch.squeeze(pred)).item()
+                total_samples += image.shape[0]
+            # update zero-shot accuracy for current batch
+            logits_full = 100.0 * image_features @ text_features_full.T
+            acc_full = accuracy(logits_full, label)[0]
+            zero_shot_metric.update(acc_full, image.size(0))
+            if self.args.sanity:
+                break
+        if total_samples>0:
+            # This means that total_samples!=0
+            current_test_accuracy = 100 * (correct / total_samples)
+            print("accuracy for current task is ===================", current_test_accuracy)
+            curr_acc_matrix.append(current_test_accuracy)
+        avg = avg_metric.avg if not torch.is_tensor(avg_metric.avg) else avg_metric.avg.item()
+        unseen_avg = zero_shot_metric.avg if not torch.is_tensor(zero_shot_metric.avg) else zero_shot_metric.avg.item()
+
+        return avg, unseen_avg, len(testset)
 
     def zero_shot_evaluation(self, model, transform):
         testset = ImageNet(transform)
@@ -430,7 +478,7 @@ class FinetuneCLIP(object):
         if not log:
             return avg_metric.average_accuracy[task], unseen_metric.average_accuracy[task]
         if use_teacher_model:
-            print(f' ******* End evaluation: AVG accuracy {np.mean(curr_acc_matrix[:task + 1]):.2f}')
+            print(f' ******* End evaluation: AVG accuracy {np.mean(curr_acc_matrix):.2f}')
             print(f' * End evaluation: task accuracy top1 {self.metric_teacher.average_accuracy[task]:.2f}')
             print(f' * End evaluation: forgetting top1 {self.metric_teacher.forgetting[task]:.2f}')
             print(f' * End evaluation: learning top1 {self.metric_teacher.learning[task]:.2f}')
@@ -440,7 +488,7 @@ class FinetuneCLIP(object):
                 f' * End evaluation: whole set evaluation top1 {self.full_metric_teacher.average_accuracy[task]:.2f}')  # print(f'* End evaluation:
             # ImageNet zero0shto top1 {zero_shot:.2f}')
         else:
-            print(f' ******* End evaluation: AVG accuracy {np.mean(curr_acc_matrix[:task + 1]):.2f}')
+            print(f' ******* End evaluation: AVG accuracy {np.mean(curr_acc_matrix):.2f}')
             print(f' * End evaluation: task accuracy top1 {self.metric.average_accuracy[task]:.2f}')
             print(f' * End evaluation: forgetting top1 {self.metric.forgetting[task]:.2f}')
             print(f' * End evaluation: learning top1 {self.metric.learning[task]:.2f}')
@@ -463,6 +511,117 @@ class FinetuneCLIP(object):
             #         zero_shot, self.args)
             logging('task', task, 'full set accuracy', self.full_metric.average_accuracy[task],
                     self.args)  # if task == 2:  #     wandb.log(  #         {'valid accuracy': self.metric.average_accuracy[task]})
+    
+    def evaluation_on_dataset_list(self, model, dataset_list, task, log=True, acc_matrix=None, use_teacher_model=False, d_idx = 0):
+        print(f" Evaluating on {d_idx} dataset")
+        if use_teacher_model:
+            unseen_metric = self.unseen_metric_teacher
+            avg_metric = self.metric_teacher
+        else:
+            unseen_metric = self.unseen_metric
+            avg_metric = self.metric
+        curr_acc_matrix = []
+        for i, dataset in enumerate(dataset_list):
+             if self.args.scenario == 'class_incremental':
+                if hasattr(dataset, 'classifier'):
+                    text_features_full = dataset.classifier(dataset.class_name_full, model)
+                if i == d_idx:
+                    if task < dataset.num_tasks - 1:
+                        unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes[task + 1:], axis=None)).to(torch.long)
+                        text_features = text_features_full.clone().detach()
+                        text_features[unseen_class_idx] = 0
+                    else:
+                        text_features = text_features_full.clone().detach()
+                elif i<d_idx:
+                     text_features = text_features_full.clone().detach()
+                elif i > d_idx:
+                    unseen_class_idx = torch.Tensor(np.concatenate(dataset.task_classes, axis=None)).to(torch.long) # masking all classes as 0 for a future dataset
+                    text_features = text_features_full.clone().detach()
+                    text_features[unseen_class_idx] = 0
+                # Now concat the features of different datasets.
+                if i == 0:
+                    text_features_combined = text_features
+                else:
+                    text_features_combined = torch.cat((text_features_combined, text_features), dim=0)
+        
+        for i, dataset in enumerate(dataset_list):
+            if i > d_idx:
+                # no need to test 0 shot
+                break
+            elif i < d_idx:
+                task_prev = True
+            else:
+                task_prev = False
+             
+            for t in range(dataset.num_tasks):
+                if i>=d_idx and t > task:
+                    break 
+                    # no need for 0 shot
+                testset = dataset.get_dataset(t, is_train=False)
+                if self.args.scenario != 'class_incremental':
+                    class_name = dataset.class_names_list[t]
+                    text_inputs_full = torch.cat([tokenize(f"a photo of a {c}") for c in class_name]).cuda()
+                    with torch.no_grad():
+                        text_features_full = model.encode_text(text_inputs_full)
+                        text_features_full /= text_features_full.norm(dim=1, keepdim=True)
+                    text_features = text_features_full
+                
+                acc, acc_full, n = self.eva_task_t_list(t, testset, model, task, text_features_combined, text_features_full, curr_acc_matrix=curr_acc_matrix, task_prev=task_prev, d_idx=d_idx, current_dataset=i)
+                # update for current task
+                if use_teacher_model:
+                    self.full_metric_teacher.update(task, t, acc_full, n=n)
+                    self.full_metric_teacher.update_metric(task, t)
+                else:
+                    self.full_metric.update(task, t, acc_full, n=n)
+                    self.full_metric.update_metric(task, t)
+
+                if t <= task:
+                    avg_metric.update(task, t, acc, n=n)
+                    avg_metric.update_metric(task, t)
+                else:
+                    unseen_metric.update(task, t, acc_full, n=n)
+                    unseen_metric.update_metric(task, t)
+                if self.args.report_to:
+                    logging('task', task, f'{t}/accuracy per task', acc, self.args)
+               
+                if self.args.sanity and t > 1:
+                    break
+            if not log:
+                return avg_metric.average_accuracy[task], unseen_metric.average_accuracy[task]
+            
+        if use_teacher_model:
+            print(f' ******* End evaluation: AVG accuracy {np.mean(curr_acc_matrix[:task + 1]):.2f}')
+            print(f' * End evaluation: task accuracy top1 {self.metric_teacher.average_accuracy[task]:.2f}')
+            print(f' * End evaluation: forgetting top1 {self.metric_teacher.forgetting[task]:.2f}')
+            print(f' * End evaluation: learning top1 {self.metric_teacher.learning[task]:.2f}')
+            print(f' * End evaluation: average learning top1 {self.metric_teacher.learning[:task + 1].mean():.2f}')
+            print(f' * End evaluation: unseen accuracy top1 {self.unseen_metric_teacher.average_accuracy[task]:.2f}')
+            print(
+                f' * End evaluation: whole set evaluation top1 {self.full_metric_teacher.average_accuracy[task]:.2f}')  # print(f'* End evaluation:
+            # ImageNet zero0shto top1 {zero_shot:.2f}')
+        else:
+            print(f' ******* End evaluation: AVG accuracy {np.mean(curr_acc_matrix[:task + 1]):.2f}')
+            print(f' * End evaluation: task accuracy top1 {self.metric.average_accuracy[task]:.2f}')
+            print(f' * End evaluation: forgetting top1 {self.metric.forgetting[task]:.2f}')
+            print(f' * End evaluation: learning top1 {self.metric.learning[task]:.2f}')
+            print(f' * End evaluation: average learning top1 {self.metric.learning[:task + 1].mean():.2f}')
+            print(f' * End evaluation: unseen accuracy top1 {self.unseen_metric.average_accuracy[task]:.2f}')
+            print(
+                f' * End evaluation: whole set evaluation top1 {self.full_metric.average_accuracy[task]:.2f}')  # print(f'* End evaluation:  #
+            # ImageNet zero0shto top1 {zero_shot:.2f}')
+       
+        if self.args.report_to:
+            logging('task', task, 'average accuracy', self.metric.average_accuracy[task], self.args)
+            logging('task', task, 'forgetting', self.metric.forgetting[task], self.args)
+            logging('task', task, 'learning', self.metric.learning[task], self.args)
+            logging('task', task, 'average learning', self.metric.learning[:task + 1].mean(), self.args)
+            logging('task', task, 'unseen accuracy', self.unseen_metric.average_accuracy[task], self.args)
+            # logging('task', task, 'ImageNet zero-shot accuracy',
+            #         zero_shot, self.args)
+            logging('task', task, 'full set accuracy', self.full_metric.average_accuracy[task],
+                    self.args)  # if task == 2:  #     wandb.log(  #         {'valid accuracy': self.metric.average_accuracy[task]})
+        print(f"--------*  Current task accuracy matrix {t}  *----------", curr_acc_matrix, "--------Avg-------", np.mean(curr_acc_matrix))
+        acc_matrix.append(curr_acc_matrix)
 
     def save_checkpoint(self, model, task, args):
         if args.save_ckpt:
@@ -479,6 +638,25 @@ class FinetuneCLIP(object):
             datasets_list.append(testset)
 
         concatenated_dataset_tta = ConcatDataset(datasets_list)
+        tta_indices = list(range(len(concatenated_dataset_tta)))
+        random.shuffle(tta_indices)
+        tta_sampler = sampler.SubsetRandomSampler(tta_indices)
+        tta_dataloader = DataLoader(concatenated_dataset_tta, batch_size=self.args.batch_size, sampler=tta_sampler)
+
+        return tta_dataloader
+    
+    def get_tta_dataloader_long_seq_classes(self, dataset_list, task, d_idx=0):
+        datasets_list_tta = []
+        for i, dataset in enumerate(dataset_list):
+            if i > d_idx:
+                break
+            for t in range(dataset.num_tasks):
+                if t > task and i==d_idx:  # Tasks seen till now
+                    break
+                testset = dataset.get_dataset(t, is_train=False, is_tta=True)
+                datasets_list_tta.append(testset)
+
+        concatenated_dataset_tta = ConcatDataset(datasets_list_tta)
         tta_indices = list(range(len(concatenated_dataset_tta)))
         random.shuffle(tta_indices)
         tta_sampler = sampler.SubsetRandomSampler(tta_indices)
@@ -745,7 +923,109 @@ class FinetuneCLIP(object):
                 if self.args.sanity and iiter>3:
                     break
         model.eval()
+    
+    def tta_with_merged_data_long_seq_classes(self, teacher_model, model, dataset, task, dataset_list, d_idx=0):
+        # self.unfreeze_model(model)
+        tta_dataloader = self.get_tta_dataloader_long_seq_classes(dataset_list, task, d_idx=d_idx)
 
+        optimizer = self.get_optimizer(model)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        loss_img = nn.CrossEntropyLoss()
+        loss_txt = nn.CrossEntropyLoss()
+        loss = AverageMeter()
+        class_names = dataset.class_name_full if self.args.dataset!="long_seq" else dataset.class_names_extended
+        momentum_schedule = self.cosine_scheduler(self.args.tta_schedule, 1, self.args.tta_epochs, len(tta_dataloader))
+        
+        for e in range(self.args.tta_epochs):
+            for iiter, (image, label, ground_truth_text) in tqdm(enumerate(tta_dataloader), desc=f"TTA for {e + 1} epoch", total=len(tta_dataloader)):
+                image = image.to(device)
+                label = label.to(device)
+                ground_truth_text = ground_truth_text.to(device)
+                ground_truth_batch = torch.arange(len(image), dtype=torch.long, device=self.args.device)
+
+                # Obtain text features for all the classes
+                text_features_full = self.get_text_features(model, dataset)
+                text_features_teacher_full = self.get_text_features(teacher_model, dataset)
+                text_features = self.mask_unseen_classes(text_features_full, task, dataset)
+                text_features_teacher = self.mask_unseen_classes(text_features_teacher_full, task, dataset)
+                with torch.no_grad():
+                    image_features = model.encode_image(image)
+                    teacher_image_features = teacher_model.encode_image(image)  # # Obtain image features from Teacher
+                    image_features /= image_features.norm(dim=1, keepdim=True)
+                    teacher_image_features /= teacher_image_features.norm(dim=1, keepdim=True)
+
+                if self.args.oracle:
+                    predicted_class = label
+                else:
+                    if self.args.tta_loss_mode == "teacher_student":
+                        logits_per_image_teacher = teacher_model.logit_scale.exp() * teacher_image_features @ text_features_teacher.T
+                        logits_per_image_student = model.logit_scale.exp() * image_features @ text_features.T
+                        max_teacher_logit, teacher_index = torch.max(logits_per_image_teacher, dim=1)
+                        max_student_logit, student_index = torch.max(logits_per_image_student, dim=1)
+                        predicted_class = torch.where(max_teacher_logit > max_student_logit, teacher_index, student_index)
+                    elif self.args.tta_loss_mode == "base":
+                        logits_per_image_predicted_phase_1 = model.logit_scale.exp() * image_features @ text_features.T
+                        predicted_class = torch.argmax(logits_per_image_predicted_phase_1, dim=1)
+                    else:
+                        raise Exception("TTA loss not implemented", self.args.tta_loss_mode)
+                
+                
+                predicted_class_names = [f'a photo of {class_names[i].replace("_", " ")}' for i in predicted_class]
+                predicted_text = tokenize(predicted_class_names)
+                predicted_text = predicted_text.to(device)
+
+                if self.args.batchwise_spu_ttl and self.args.method=="SPU":
+                    cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type_ttl)
+                    if iiter == 0:
+                        print("-----computing 1st time-----")
+                        self.compute_masks_ttl_batch(model, cur_importance, task)
+                        with torch.no_grad():
+                            for name, param in model.named_parameters():
+                                self.prev_avg_grad[name] = param.grad.clone().detach()
+                      ############################################################
+                    else:
+                        if not self.check_similarity_gradients(model) or self.args.compute_ttl_masks_every_batch:
+                            #### compute importance wrt to this batch ######
+                            print("-------------------orthogonal gradients so compute mask ------------------")
+                            self.compute_masks_ttl_batch(model, cur_importance, task)
+                     #############################################################
+                else:  
+                    logits_per_image_phase_2, logits_per_text_phase_2 = model(image, predicted_text)
+                    # logits_per_image_phase_oracle_2, logits_per_text_phase_oracle_2 = model(image, ground_truth_text)
+                    total_loss = (loss_img(logits_per_image_phase_2, ground_truth_batch) + loss_txt(logits_per_text_phase_2, ground_truth_batch)) / 2.0
+                    total_loss.backward()
+
+                
+                loss.update(total_loss.item() / image.shape[0], n=image.shape[0])
+                self.update_model_ttl(model, optimizer, task)
+                optimizer.zero_grad()
+                
+
+                # Updating the Teacher via EMA
+                with torch.no_grad():
+                    m = momentum_schedule[iiter]
+                    if self.args.batchwise_spu_ttl and self.args.method=="SPU":
+                        k = self.args.k_ttl
+                        for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                            mult_matrix_teacher = (k - m) * (self.ttl_mask_per_task[task][name_k]) + m
+                            mult_matrix_student = (m - k) * (self.ttl_mask_per_task[task][name_k]) + (1 - m)
+                            param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
+                    else:
+                        if self.args.use_sup_mask_in_ttl and self.args.method=="SPU":
+                            k = self.args.k_ttl
+                            for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                                mult_matrix_teacher = (k - m) * (self.mask_per_task[task][name_k]) + m
+                                mult_matrix_student = (m - k) * (self.mask_per_task[task][name_k]) + (1 - m)
+                                param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
+                        else:
+                            for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                                param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+                if iiter % self.args.print_frequency == 0:
+                    print(f'TTA Loss per batch {loss.val:.4f} ({loss.avg: .4f}) \t')
+                if self.args.sanity and iiter>3:
+                    break
+        model.eval()
+    
     def get_optimizer(self, model):
         if self.args.optimizer == 'adam':
             optimizer = optim.Adam(model.parameters(), lr=self.args.lr, betas=(0.9, 0.98), eps=1e-6, weight_decay=self.args.wd)

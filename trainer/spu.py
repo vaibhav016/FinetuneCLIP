@@ -50,7 +50,10 @@ class MASEDIT(FinetuneCLIP):
         self.trainable_params = []
         self.mask_per_task = {i:{} for i in range(self.args.num_tasks)}
         self.ttl_mask_per_task = {i:{} for i in range(self.args.num_tasks)}
-        self.mask_per_task_union = {i:{} for i in range(self.args.num_tasks)}
+        self.importance_per_task = {i:{} for i in range(self.args.num_tasks)}
+        
+        self.mask_per_task_union = {}
+        self.importance_per_task_union = {}
 
 
     def setup_importance(self, model):
@@ -97,7 +100,6 @@ class MASEDIT(FinetuneCLIP):
                     if any(param in name for param in ['bias']) or self.args.sparsity == 1.0:
                         # self.mask[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
                         self.mask_per_task[task][name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
-
                         continue
                     if name not in cur_importance.keys():
                         print(f' importance of `{name} is none')
@@ -124,6 +126,7 @@ class MASEDIT(FinetuneCLIP):
                     # print("mask--------------", self.mask[name].shape)
                     # self.mask[name].view(-1)[topk_indices] = 1
                     self.mask_per_task[task][name].view(-1)[topk_indices] = 1
+                    self.importance_per_task[task][name] = magnitudes
                     
     def update_model(self, model, optimizer, task, **kwargs):
         # print("----------- spu update --------------")
@@ -134,7 +137,7 @@ class MASEDIT(FinetuneCLIP):
                 gradients = param.grad
                 if gradients is not None:
                     if self.args.supervised_union_masks_per_task:
-                        param.grad =  self.mask_per_task_union[task][name] * param.grad
+                        param.grad =  self.mask_per_task_union[name] * param.grad
                     else:
                         param.grad =  self.mask_per_task[task][name] * param.grad
                     # Update only the 1% most activated entries

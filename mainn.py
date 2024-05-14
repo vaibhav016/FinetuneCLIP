@@ -71,7 +71,11 @@ def get_time_stamp_for_saving_output(args):
 def plot_cl_metrics(args, average_accuracy_student, backward_transfer_student, acc_matrix_student=None, average_accuracy_teacher=None,
                     backward_transfer_teacher=None, acc_avg_student_lp=None, bt_student_lp=None, acc_matrix_teacher=None, acc_matrix_student_lp=None,
                     linear_probe=False, ):
-    tasks = np.arange(1, args.num_tasks + 1)
+    if args.dataset=="long_seq_classes":
+        tasks = np.arange(1, len(average_accuracy_student)+1)
+        args.num_tasks = len(average_accuracy_student)
+    else:
+        tasks = np.arange(1, args.num_tasks + 1)
     # Plot average accuracy
     # [acc_whole, acc_linear, acc_block]
     # [bt_whole, bt_linear, bt_block]
@@ -209,6 +213,46 @@ def seed_everything(seed=1234):
     # torch.use_deterministic_algorithms(True)   # it doesnt work with vit trainable backbone. Some operations are non-det.
 
 
+def train_single_data(Trainer, model, teacher_model, dataset, args, acc_matrix_student, acc_matrix_teacher, dataset_list=None, d_idx=0):
+        for task in range(dataset.num_tasks):
+            if args.sweep and task == 3:
+                break
+            print(f'Train task {task}')
+            if args.evaluation:
+                Trainer.only_evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
+                continue
+            if args.method == "SPU":
+                Trainer.unfreeze_model(model)
+                Trainer.compute_importance(dataset, model, task)
+                if args.supervised_union_masks_per_task:
+                    Trainer.union_supervised_masks(model, task)
+            Trainer.train(teacher_model, model, dataset, task)
+            # Trainer.unfreeze_model(model)
+            if not args.ema and task>0:
+                teacher_model.load_state_dict(model.state_dict())
+
+            # if task == 0: # Checking a config where T=S only for 1st task.
+            #     teacher_model.load_state_dict(model.state_dict())
+            
+            if args.dataset == "long_seq_classes":
+                if args.tta_phase and task > 0:
+                    Trainer.tta_with_merged_data_long_seq_classes(teacher_model, model, dataset, task, dataset_list, d_idx=d_idx)
+                print("------------------- Evaluation of Student model on Long seq classes ----------------------")
+                Trainer.evaluation_on_dataset_list(model, dataset_list, task, acc_matrix=acc_matrix_student, d_idx=d_idx)
+
+                print("------------------- Evaluation of Teacher model  on Long seq classes ----------------------")
+                Trainer.evaluation_on_dataset_list(teacher_model, dataset_list, task, acc_matrix=acc_matrix_teacher, d_idx=d_idx)
+            else:
+                if args.tta_phase and task > 0:
+                    Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
+                print("------------------- Evaluation of Student model ----------------------")
+                Trainer.evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
+
+                print("------------------- Evaluation of Teacher model ----------------------")
+                Trainer.evaluation(teacher_model, dataset, task, acc_matrix=acc_matrix_teacher)
+
+            Trainer.save_checkpoint(model, task, args)
+
 @hydra.main(version_base=None, config_path="config", config_name="base")
 def main(args):
     args = omegaconf.OmegaConf.to_container(args)
@@ -266,53 +310,32 @@ def main(args):
         dataset = SplitGTSRB(args, transform=transform)
     elif args.dataset == 'long_seq':
         dataset = LongSequence(args, transform=transform)
+    elif args.dataset == 'long_seq_classes':
+        dataset_list = []
+        dataset1 = SplitAircraft(args, transform=transform)
+        dataset_list.append(dataset1)
+        dataset = SplitCarsV(args, transform=transform)
+        dataset_list.append(dataset)
     else:
         raise ValueError
 
     args.num_classes = dataset.num_classes
     args.num_tasks = dataset.num_tasks
     args.scenario = dataset.scenario
+
     Trainer = METHOD[args.method](args)
     if args.sanity:
         args.batch_size=2
 
     acc_matrix_teacher = []
     acc_matrix_student = []
+    if args.dataset != 'long_seq_classes':
+        train_single_data(Trainer, model, teacher_model, dataset, args, acc_matrix_student, acc_matrix_teacher)
+    else:
+        for i, dataset in enumerate(dataset_list):
+            print(f'*** Train on long seq classes for dataset: *** {i}')
+            train_single_data(Trainer, model, teacher_model, dataset, args, acc_matrix_student, acc_matrix_teacher, dataset_list, i)
 
-    for task in range(dataset.num_tasks):
-        if args.sweep and task == 3:
-            break
-        print(f'Train task {task}')
-        if args.evaluation:
-            Trainer.only_evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
-            continue
-        if args.method == "SPU":
-            Trainer.unfreeze_model(model)
-            Trainer.compute_importance(dataset, model, task)
-            if args.supervised_union_masks_per_task:
-                Trainer.union_supervised_masks(model, task)
-        Trainer.train(teacher_model, model, dataset, task)
-        # Trainer.unfreeze_model(model)
-        if not args.ema and task>0:
-            teacher_model.load_state_dict(model.state_dict())
-
-        # if task == 0: # Checking a config where T=S only for 1st task.
-        #     teacher_model.load_state_dict(model.state_dict())
-        
-        if args.tta_phase and task > 0:
-            Trainer.tta_with_merged_data(teacher_model, model, dataset, task)
-        print("------------------- Evaluation of Student model ----------------------")
-        Trainer.evaluation(model, dataset, task, acc_matrix=acc_matrix_student)
-
-        print("------------------- Evaluation of Teacher model ----------------------")
-        Trainer.evaluation(teacher_model, dataset, task, acc_matrix=acc_matrix_teacher)
-
-        Trainer.save_checkpoint(model, task, args)
-
-        if task==3 and args.sanity:
-            args.num_tasks=3
-            break
-    
     print(f'Total training time in hours: {(time.time() - start) / 3600: .3f}')
     args.time_elapsed_hrs = (time.time() - start) / 3600.0
 
