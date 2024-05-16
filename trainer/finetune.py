@@ -628,6 +628,41 @@ class FinetuneCLIP(object):
             path = get_ckpt_save_path(args, task)
             os.makedirs(os.path.join(args.save_base_path, self.args.name), exist_ok=True)
             torch.save({'model_state_dict': model.state_dict(), }, path)
+ 
+    def create_imbalanced_dataset_task_wise(self, datasets_list, task):
+        task_weights = [len(dataset) for dataset in datasets_list]
+        task_weights = np.array(task_weights) / sum(task_weights)
+        
+        # Step 2: Generate Dirichlet random variables
+        proportions = np.random.dirichlet(task_weights)
+        print(f" ************ imbalanced proportions for task { task } *************  ", proportions )
+        
+        # Step 3: Sample from datasets
+        imbalanced_data = []
+        for i, dataset in enumerate(datasets_list):
+            num_samples = (proportions[i] * len(dataset)).astype(int)
+            indices = np.random.choice(len(dataset), size=num_samples, replace=False)
+            task_data = [dataset[idx] for idx in indices]
+            imbalanced_data.append(task_data)
+        
+        return imbalanced_data
+    def create_imbalanced_dataset(self, datasets_list, task):
+        task_weights = [len(dataset) for dataset in datasets_list]
+        task_weights = np.array(task_weights) / sum(task_weights)
+        
+        # Step 2: Generate Dirichlet random variables
+        proportions = np.random.dirichlet(task_weights)
+        print(f" ************ imbalanced proportions for task { task } *************  ", proportions )
+        
+        # Step 3: Sample from datasets
+        imbalanced_data = []
+        for i, dataset in enumerate(datasets_list):
+            num_samples = (proportions[i] * len(dataset)).astype(int)
+            indices = np.random.choice(len(dataset), size=num_samples, replace=False)
+            task_data = [dataset[idx] for idx in indices]
+            imbalanced_data.append(task_data)
+        
+        return imbalanced_data
 
     def get_tta_dataloader(self, dataset, task):
         datasets_list = []
@@ -636,15 +671,20 @@ class FinetuneCLIP(object):
                 break
             testset = dataset.get_dataset(t, is_train=False, is_tta=True)
             datasets_list.append(testset)
+        
+        if self.args.imbalanced_ttl_data:
+            dataset_ttl = self.create_imbalanced_dataset(datasets_list, task)
+        else:
+            dataset_ttl = datasets_list
 
-        concatenated_dataset_tta = ConcatDataset(datasets_list)
+        concatenated_dataset_tta = ConcatDataset(dataset_ttl)
         tta_indices = list(range(len(concatenated_dataset_tta)))
         random.shuffle(tta_indices)
         tta_sampler = sampler.SubsetRandomSampler(tta_indices)
         tta_dataloader = DataLoader(concatenated_dataset_tta, batch_size=self.args.batch_size, sampler=tta_sampler)
 
         return tta_dataloader
-    
+     
     def get_tta_dataloader_long_seq_classes(self, dataset_list, task, d_idx=0):
         datasets_list_tta = []
         for i, dataset in enumerate(dataset_list):
@@ -902,14 +942,14 @@ class FinetuneCLIP(object):
                 # Updating the Teacher via EMA
                 with torch.no_grad():
                     m = momentum_schedule[iiter]
-                    if self.args.batchwise_spu_ttl and self.args.method=="SPU":
+                    if self.args.batchwise_spu_ttl and self.args.method=="SPU" and self.args.use_2_mom_ttl:
                         k = self.args.k_ttl
                         for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                             mult_matrix_teacher = (k - m) * (self.ttl_mask_per_task[task][name_k]) + m
                             mult_matrix_student = (m - k) * (self.ttl_mask_per_task[task][name_k]) + (1 - m)
                             param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                     else:
-                        if self.args.use_sup_mask_in_ttl and self.args.method=="SPU":
+                        if self.args.use_sup_mask_in_ttl and self.args.method=="SPU" and self.args.use_2_mom_supervised:
                             k = self.args.k_ttl
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 mult_matrix_teacher = (k - m) * (self.mask_per_task[task][name_k]) + m

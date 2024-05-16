@@ -45,15 +45,17 @@ score: norm
 batchwise_spu_ttl: True
 cosine_threshold: 0.1
 use_2_mom_supervised: True 
+use_2_mom_ttl: True
 use_sup_mask_in_ttl: False
 compute_ttl_masks_every_batch: True
 select_loss_type_ttl: cn
 supervised_union_masks_per_task: True
+imbalanced_ttl_data: False
 
 
 # method
-method: Finetune
-# method: SPU
+# method: Finetune
+method: SPU
 
 # device
 device: cuda
