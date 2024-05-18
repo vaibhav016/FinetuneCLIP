@@ -37,7 +37,7 @@ sanity: False
 k: 0.8
 k_ttl: 0.9
 scale: 1
-update_all: True
+update_all: False
 select_loss_type: cn
 cur_importance_batch_percentage: 1
 sparsity: 0.1

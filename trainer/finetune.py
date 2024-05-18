@@ -862,6 +862,8 @@ class FinetuneCLIP(object):
                     topk_values, topk_indices = torch.topk(magnitudes.view(-1), k=k)
                     self.ttl_mask_per_task[task][name] = torch.zeros_like(magnitudes).to(self.args.device)
                     self.ttl_mask_per_task[task][name].view(-1)[topk_indices] = 1
+                else:
+                    self.ttl_mask_per_task[task][name] = torch.zeros_like(param).to(self.args.device)
 
     def tta_with_merged_data(self, teacher_model, model, dataset, task):
         # self.unfreeze_model(model)
@@ -917,12 +919,12 @@ class FinetuneCLIP(object):
                     if iiter == 0:
                         print("-----computing 1st time-----")
                         self.compute_masks_ttl_batch(model, cur_importance, task)
-                        with torch.no_grad():
-                            for name, param in model.named_parameters():
-                                self.prev_avg_grad[name] = param.grad.clone().detach()
+                        # with torch.no_grad():
+                        #     for name, param in model.named_parameters():
+                        #         self.prev_avg_grad[name] = param.grad.clone().detach()
                       ############################################################
                     else:
-                        if not self.check_similarity_gradients(model) or self.args.compute_ttl_masks_every_batch:
+                        if self.args.compute_ttl_masks_every_batch:
                             #### compute importance wrt to this batch ######
                             print("-------------------orthogonal gradients so compute mask ------------------")
                             self.compute_masks_ttl_batch(model, cur_importance, task)

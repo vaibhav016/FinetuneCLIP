@@ -127,7 +127,10 @@ class MASEDIT(FinetuneCLIP):
                     # self.mask[name].view(-1)[topk_indices] = 1
                     self.mask_per_task[task][name].view(-1)[topk_indices] = 1
                     self.importance_per_task[task][name] = magnitudes
-                    
+                else:
+                    self.mask_per_task[task][name] = torch.zeros(param.shape, dtype=param.dtype).to(self.args.device)
+                    self.importance_per_task[task][name] =torch.zeros(param.shape, dtype=param.dtype).to(self.args.device)
+
     def update_model(self, model, optimizer, task, **kwargs):
         # print("----------- spu update --------------")
         count = kwargs.get('count', 0)
