@@ -646,6 +646,7 @@ class FinetuneCLIP(object):
             imbalanced_data.append(task_data)
         
         return imbalanced_data
+    
     def create_imbalanced_dataset(self, datasets_list, task):
         task_weights = [len(dataset) for dataset in datasets_list]
         task_weights = np.array(task_weights) / sum(task_weights)
@@ -1020,15 +1021,11 @@ class FinetuneCLIP(object):
                     cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type_ttl)
                     if iiter == 0:
                         print("-----computing 1st time-----")
-                        self.compute_masks_ttl_batch(model, cur_importance, task)
-                        with torch.no_grad():
-                            for name, param in model.named_parameters():
-                                self.prev_avg_grad[name] = param.grad.clone().detach()
-                      ############################################################
+                        self.compute_masks_ttl_batch(model, cur_importance, task)                      ############################################################
                     else:
-                        if not self.check_similarity_gradients(model) or self.args.compute_ttl_masks_every_batch:
+                        if self.args.compute_ttl_masks_every_batch:
                             #### compute importance wrt to this batch ######
-                            print("-------------------orthogonal gradients so compute mask ------------------")
+                            print("-------orthogonal gradients so compute mask ------------------")
                             self.compute_masks_ttl_batch(model, cur_importance, task)
                      #############################################################
                 else:  
