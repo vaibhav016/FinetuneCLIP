@@ -96,6 +96,35 @@ class FinetuneCLIP(object):
                     
                     self.mask_per_task_union[name] = mask_union
 
+    def union_unsupervised_masks(self, model, task):
+        if task == 0:
+            self.mask_per_task_union_ttl = self.mask_per_task[0]
+            return
+
+        union_mask_prev_tasks_ttl = self.mask_per_task_union_ttl
+        importance_score_current_task_ttl = self.importance_per_task[task]
+       
+        with torch.no_grad():
+            for name, param in tqdm(model.named_parameters()):
+                if name in self.trainable_params:
+                    if any(param in name for param in ['bias']) or self.args.sparsity == 1.0:
+                        # self.mask[name] = torch.ones(param.shape, dtype=param.dtype).to(self.args.device)
+                        continue # No need to sparsify this kind of parameters
+                    if name not in importance_score_current_task_ttl.keys() :
+                        print(f' importance of `{name} is none, in union masking fx ')
+                        continue
+                    
+                    masked_union = torch.logical_or(union_mask_prev_tasks_ttl[name], self.mask_per_task[task][name])
+                    masked_score =  importance_score_current_task_ttl[name] * masked_union
+                    
+                    k = int(importance_score_current_task_ttl[name].numel() * self.args.sparsity)
+
+                    topk_values, topk_indices = torch.topk(masked_score.view(-1), k=k)
+                    mask_union = torch.zeros_like(masked_union).to(self.args.device)
+                    mask_union.view(-1)[topk_indices] = 1
+                    
+                    self.mask_per_task_union_ttl[name] = mask_union
+
     def only_evaluation(self, model, dataset, task, acc_matrix=None):
         model, _, _, _ = resume(self.args, task, model)
         self.evaluation(model, dataset, task, acc_matrix=acc_matrix)
@@ -168,7 +197,7 @@ class FinetuneCLIP(object):
 
     def update_model_ttl(self, model, optimizer, task):    
         if self.args.method=="SPU":     
-            if self.args.batchwise_spu_ttl:   
+            if self.args.batchwise_spu_ttl and not self.args.unsupervised_union_masks_per_task:   
                 #  print("********** SPU TTL Optim*************")
                 with torch.no_grad():
                     for name, param in model.named_parameters():
@@ -178,7 +207,7 @@ class FinetuneCLIP(object):
                             param.grad = self.ttl_mask_per_task[task][name] * param.grad
                             # Update only the 1% most activated entries
                             # param.data -= optimizer.param_groups[0]['lr'] * param.grad
-            elif self.args.use_sup_mask_in_ttl:    
+            elif self.args.use_sup_mask_in_ttl and not self.args.unsupervised_union_masks_per_task:    
                 #  print("********** SPU TTL Optim*************")
                 with torch.no_grad():
                     for name, param in model.named_parameters():
@@ -187,7 +216,17 @@ class FinetuneCLIP(object):
                             # print(self.mask_ttl.keys())
                             param.grad = self.mask_per_task[task][name] * param.grad
                             # Update only the 1% most activated entries
+                            # param.data -= optimizer.param_groups[0]['lr'] * param.grad 
+            elif self.args.unsupervised_union_masks_per_task:
+                 with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        gradients = param.grad
+                        if gradients is not None:
+                            # print(self.mask_ttl.keys())
+                            param.grad = self.mask_per_task_union_ttl[name] * param.grad
+                            # Update only the 1% most activated entries
                             # param.data -= optimizer.param_groups[0]['lr'] * param.grad
+
 
         optimizer.step()
 
@@ -915,7 +954,7 @@ class FinetuneCLIP(object):
                 predicted_text = tokenize(predicted_class_names)
                 predicted_text = predicted_text.to(device)
 
-                if self.args.batchwise_spu_ttl and self.args.method=="SPU":
+                if self.args.batchwise_spu_ttl and self.args.method=="SPU" and not self.args.unsupervised_union_masks_per_task:
                     cur_importance, total_loss = self.compute_importance_score_batch(model,  image, predicted_text, loss_type=self.args.select_loss_type_ttl)
                     if iiter == 0:
                         print("-----computing 1st time-----")
@@ -945,18 +984,24 @@ class FinetuneCLIP(object):
                 # Updating the Teacher via EMA
                 with torch.no_grad():
                     m = momentum_schedule[iiter]
-                    if self.args.batchwise_spu_ttl and self.args.method=="SPU" and self.args.use_2_mom_ttl:
+                    if self.args.batchwise_spu_ttl and self.args.method=="SPU" and self.args.use_2_mom_ttl and not self.args.unsupervised_union_masks_per_task:
                         k = self.args.k_ttl
                         for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                             mult_matrix_teacher = (k - m) * (self.ttl_mask_per_task[task][name_k]) + m
                             mult_matrix_student = (m - k) * (self.ttl_mask_per_task[task][name_k]) + (1 - m)
                             param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                     else:
-                        if self.args.use_sup_mask_in_ttl and self.args.method=="SPU" and self.args.use_2_mom_supervised:
+                        if self.args.use_sup_mask_in_ttl and self.args.method=="SPU" and self.args.use_2_mom_supervised and not self.args.unsupervised_union_masks_per_task:
                             k = self.args.k_ttl
                             for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
                                 mult_matrix_teacher = (k - m) * (self.mask_per_task[task][name_k]) + m
                                 mult_matrix_student = (m - k) * (self.mask_per_task[task][name_k]) + (1 - m)
+                                param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
+                        elif self.args.unsupervised_union_masks_per_task:
+                            k = self.args.k_ttl
+                            for (name_q, param_q), (name_k, param_k) in zip(model.named_parameters(), teacher_model.named_parameters()):
+                                mult_matrix_teacher = (k - m) * (self.mask_per_task_union_ttl[name_k]) + m
+                                mult_matrix_student = (m - k) * (self.mask_per_task_union_ttl[name_k]) + (1 - m)
                                 param_k.data.mul_(mult_matrix_teacher).add_((mult_matrix_student) * param_q.detach().data)
                         else:
                             for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):

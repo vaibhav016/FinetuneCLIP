@@ -49,8 +49,9 @@ use_2_mom_ttl: True
 use_sup_mask_in_ttl: False
 compute_ttl_masks_every_batch: True
 select_loss_type_ttl: cn
-supervised_union_masks_per_task: True
+supervised_union_masks_per_task: False
 imbalanced_ttl_data: False
+unsupervised_union_masks_per_task: True
 
 
 # method

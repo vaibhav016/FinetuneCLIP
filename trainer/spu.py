@@ -54,6 +54,8 @@ class MASEDIT(FinetuneCLIP):
         
         self.mask_per_task_union = {}
         self.importance_per_task_union = {}
+        self.mask_per_task_union_ttl = {}
+        self.importance_per_task_union_ttl = {}
 
 
     def setup_importance(self, model):

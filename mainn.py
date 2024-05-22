@@ -224,8 +224,16 @@ def train_single_data(Trainer, model, teacher_model, dataset, args, acc_matrix_s
             if args.method == "SPU":
                 Trainer.unfreeze_model(model)
                 Trainer.compute_importance(dataset, model, task)
+                if args.supervised_union_masks_per_task and args.unsupervised_union_masks_per_task:
+                    print("both flags cant be true")
+                    raise ValueError 
+                
                 if args.supervised_union_masks_per_task:
                     Trainer.union_supervised_masks(model, task)
+                    
+                if args.unsupervised_union_masks_per_task:
+                    Trainer.union_unsupervised_masks(model, task)
+
             Trainer.train(teacher_model, model, dataset, task)
             # Trainer.unfreeze_model(model)
             if not args.ema and task>0:
